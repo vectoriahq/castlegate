@@ -1,21 +1,31 @@
 #!/usr/bin/env node
 // Package 1 harness for the Castlegate spike. Needs Docker and the qgis/qgis-server:ltr image.
 //
-//   node dev/castlegate-spike/run.mjs <work folder>
+//   node spike/run.mjs <work folder>
+//   CASTLEGATE_BACKEND=mssql node spike/run.mjs <work folder>
 //
 // It builds the test project into <work folder>, starts a stub OpenID Connect
 // issuer and the QGIS Server with the plugin in containers, runs each check
 // against http://localhost:8020 and prints one line per check.
+//
+// With CASTLEGATE_BACKEND=mssql the layers live in SQL Server instead of the GeoPackage:
+// it builds the image in mssql/, which has Microsoft's ODBC driver, and starts Microsoft's
+// SQL Server 2022 Developer container. Both accept Microsoft's licence terms.
 
 import { spawnSync } from "child_process";
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { createSign, generateKeyPairSync as genKeys } from "crypto";
+import { createSign, generateKeyPairSync as genKeys, randomBytes } from "crypto";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const work = resolve(process.argv[2] ?? join(here, ".work"));
-const IMAGE = "qgis/qgis-server:ltr";
+const MSSQL = process.env.CASTLEGATE_BACKEND === "mssql";
+const IMAGE = MSSQL ? "castlegate-qgis-mssql" : "qgis/qgis-server:ltr";
+const MSSQL_IMAGE = "mcr.microsoft.com/mssql/server:2022-latest";
+// A test password for this run's throwaway container, meeting SQL Server's complexity rule.
+const SA_PASSWORD = `Cg_${randomBytes(12).toString("hex")}_A1`;
+const MSSQL_URI = `dbname='castlegate' service='DSN=castlegate' host='castlegate-mssql' user='sa' password='${SA_PASSWORD}'`;
 const NET = "castlegate-spike";
 const PORT = 8020;
 const BASE = `http://localhost:${PORT}/`;
@@ -34,9 +44,10 @@ function record(id, ok, detail) {
   console.log(`${ok === null ? "INFO" : ok ? "PASS" : "FAIL"}  ${id}  ${detail}`);
 }
 
-function docker(args, { quiet = true, allowFail = false } = {}) {
-  const r = spawnSync("docker", args, { encoding: "utf-8" });
-  if (r.status !== 0 && !allowFail) throw new Error(`docker ${args.join(" ")}\n${r.stderr}`);
+function docker(args, { quiet = true, allowFail = false, env } = {}) {
+  if (env) args = [args[0], ...Object.keys(env).flatMap((k) => ["-e", k]), ...args.slice(1)];
+  const r = spawnSync("docker", args, { encoding: "utf-8", env: { ...process.env, ...env } });
+  if (r.status !== 0 && !allowFail) throw new Error(`docker ${args.join(" ")}\n${r.stderr}${r.stdout}`);
   if (!quiet) process.stdout.write(r.stdout);
   return r;
 }
@@ -94,14 +105,53 @@ const live = join(work, "live");
 const issuerDir = join(work, "issuer");
 const rulesDir = join(work, "rules");
 
-function prepare() {
+// T-SQL run in the SQL Server container; its own environment holds the password.
+function sql(query, { db = "castlegate", allowFail = false } = {}) {
+  return docker(
+    ["exec", "castlegate-mssql", "sh", "-c", `SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" /opt/mssql-tools18/bin/sqlcmd -C -b -I -S localhost -U sa -d ${db} -h -1 -W -Q "$Q"`],
+    { allowFail, env: { Q: query } }
+  );
+}
+
+async function startSqlServer() {
+  docker(["build", "-q", "-t", IMAGE, join(here, "mssql")]);
+  docker([
+    "run", "-d", "--name", "castlegate-mssql", "--network", NET,
+    "-e", "ACCEPT_EULA=Y", "-e", "MSSQL_PID=Developer", "-e", `MSSQL_SA_PASSWORD=${SA_PASSWORD}`, MSSQL_IMAGE,
+  ]);
+  for (let i = 0; i < 90 && sql("SELECT 1", { db: "master", allowFail: true }).status !== 0; i++) await new Promise((r) => setTimeout(r, 1000));
+  sql("CREATE DATABASE castlegate", { db: "master" });
+  const columns = "fid INT IDENTITY(1,1) PRIMARY KEY, name NVARCHAR(100), owner NVARCHAR(100), status NVARCHAR(20), secret NVARCHAR(100), geom geometry";
+  for (const t of ["assets", "restricted", "big"]) {
+    sql(`CREATE TABLE dbo.${t} (${columns}); CREATE SPATIAL INDEX ${t}_geom ON dbo.${t}(geom) WITH (BOUNDING_BOX = (144, -39, 146, -37));`);
+  }
+  const v = sql("SELECT @@VERSION", { db: "master" }).stdout.trim().split("\n")[0];
+  record("mssql-version", null, v);
+}
+
+// Puts the assets table back as it was built, so each server mode starts from the same rows.
+function resetSqlServer() {
+  sql("DELETE FROM dbo.assets; SET IDENTITY_INSERT dbo.assets ON; INSERT INTO dbo.assets (fid, name, owner, status, secret, geom) SELECT fid, name, owner, status, secret, geom FROM dbo.assets_pristine; SET IDENTITY_INSERT dbo.assets OFF; DBCC CHECKIDENT ('dbo.assets', RESEED) WITH NO_INFOMSGS;");
+}
+
+async function prepare() {
   rmSync(work, { recursive: true, force: true });
   mkdirSync(pristine, { recursive: true });
+  docker(["rm", "-f", "castlegate-issuer", "castlegate-spike", "castlegate-mssql"], { allowFail: true });
+  docker(["network", "rm", NET], { allowFail: true });
+  docker(["network", "create", NET]);
+  if (MSSQL) await startSqlServer();
   docker([
-    "run", "--rm", "-e", "QT_QPA_PLATFORM=offscreen",
+    "run", "--rm", "--network", NET, "-e", "QT_QPA_PLATFORM=offscreen",
+    ...(MSSQL ? ["-e", `CASTLEGATE_MSSQL=${MSSQL_URI}`] : []),
     "-v", `${pristine}:/io/data`, "-v", `${here}:/work:ro`,
     "--entrypoint", "python3", IMAGE, "/work/build_project.py",
   ]);
+  if (MSSQL) {
+    sql("SELECT * INTO dbo.assets_pristine FROM dbo.assets");
+    const counts = sql("SELECT (SELECT COUNT(*) FROM dbo.assets), (SELECT COUNT(*) FROM dbo.restricted), (SELECT COUNT(*) FROM dbo.big)").stdout.trim();
+    record("mssql-rows", null, `rows in assets, restricted, big: ${counts.replace(/\s+/g, ", ")}`);
+  }
   writeIssuer(issuerDir);
   const rules = JSON.parse(readFileSync(join(here, "rules.json"), "utf-8"));
   for (let i = 0; i < 100; i++) {
@@ -109,9 +159,6 @@ function prepare() {
   }
   mkdirSync(rulesDir, { recursive: true });
   writeFileSync(join(rulesDir, "rules.json"), JSON.stringify(rules, null, 1));
-  docker(["rm", "-f", "castlegate-issuer", "castlegate-spike"], { allowFail: true });
-  docker(["network", "rm", NET], { allowFail: true });
-  docker(["network", "create", NET]);
   docker([
     "run", "-d", "--name", "castlegate-issuer", "--network", NET, "-v", `${issuerDir}:/srv:ro`,
     "--entrypoint", "python3", IMAGE, "-m", "http.server", "8000", "--directory", "/srv",
@@ -122,6 +169,7 @@ async function startServer(mode = {}) {
   docker(["rm", "-f", "castlegate-spike"], { allowFail: true });
   rmSync(live, { recursive: true, force: true });
   cpSync(pristine, live, { recursive: true });
+  if (MSSQL) resetSqlServer();
   const env = {
     QGIS_SERVER_LOG_LEVEL: "0",
     CASTLEGATE_ISSUER: ISSUER,
@@ -368,15 +416,21 @@ async function checksPerformance(pluginOn) {
 
 async function main() {
   console.log(`work folder ${work}`);
-  prepare();
+  await prepare();
 
   console.log("\n# Plugin, defaults");
   await startServer({ env: { CPL_DEBUG: "ON" } });
   console.log(short(logs().split("\n").filter((l) => /Castlegate|plugin/i.test(l)).join(" | ")));
   await checksDefault();
   await checksPerformance(true);
-  const sqlLines = logs().split("\n").filter((l) => /big|SELECT/i.test(l) && /OGR|GPKG|SQLite|sql/i.test(l));
-  record("pushdown-log", null, `${sqlLines.length} OGR/SQL log lines mention big; samples: ${short(sqlLines.slice(-3).join(" || "))}`);
+  if (MSSQL) {
+    // What QGIS sent to SQL Server for the big layer, from SQL Server's own record of queries run.
+    const q = sql("SELECT TOP 6 CAST(qs.execution_count AS varchar) + ' x ' + REPLACE(REPLACE(LEFT(t.text, 400), CHAR(13), ' '), CHAR(10), ' ') FROM sys.dm_exec_query_stats qs CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) t WHERE t.text LIKE '%big%' AND t.text LIKE '%owner%' AND t.text NOT LIKE '%dm_exec%' ORDER BY qs.last_execution_time DESC").stdout.trim();
+    record("pushdown-mssql", null, `queries SQL Server ran on big naming owner: ${q.replace(/\n/g, " || ") || "none"}`);
+  } else {
+    const sqlLines = logs().split("\n").filter((l) => /big|SELECT/i.test(l) && /OGR|GPKG|SQLite|sql/i.test(l));
+    record("pushdown-log", null, `${sqlLines.length} OGR/SQL log lines mention big; samples: ${short(sqlLines.slice(-3).join(" || "))}`);
+  }
   writeFileSync(join(work, "log-default.txt"), logs());
 
   console.log("\n# Plugin, empty cache key");
@@ -424,7 +478,7 @@ async function main() {
   const open = await gps(undefined);
   record("stock-no-token", null, `stock server, no token: status ${open.status}, names [${layerNamesIn(open.text).join(", ")}]`);
 
-  docker(["rm", "-f", "castlegate-spike", "castlegate-issuer"], { allowFail: true });
+  docker(["rm", "-f", "castlegate-spike", "castlegate-issuer", "castlegate-mssql"], { allowFail: true });
   docker(["network", "rm", NET], { allowFail: true });
   writeFileSync(join(work, "results.json"), JSON.stringify(results, null, 1));
   const failed = results.filter((r) => r.ok === false);

@@ -5,6 +5,11 @@
 
 Writes /io/data/castlegate.gpkg, /io/data/castlegate.qgs (three layers) and
 /io/data/castlegate-100.qgs (one hundred layers, for timing GetProjectSettings).
+
+With CASTLEGATE_MSSQL set to a SQL Server connection (dbname, service, host, user and
+password, as QGIS writes them), it also copies the three layers into the tables of that
+name, which must exist with an identity "fid" key and a "geom" column, and the projects
+name those tables instead of the GeoPackage.
 """
 
 import os
@@ -25,7 +30,8 @@ from qgis.core import (
 )
 from qgis.PyQt.QtCore import QVariant
 
-OUT = "/io/data"
+OUT = os.environ.get("CASTLEGATE_OUT", "/io/data")
+MSSQL = os.environ.get("CASTLEGATE_MSSQL")
 GPKG = os.path.join(OUT, "castlegate.gpkg")
 PEOPLE = ["alice@example.org", "bob@example.org"]
 
@@ -85,12 +91,42 @@ write(memory_layer("restricted", restricted), "restricted", False)
 write(memory_layer("big", big), "big", False)
 
 
+def mssql_source(table):
+    return "%s srid=4326 type=Point key='fid' estimatedmetadata=true table=\"dbo\".\"%s\" (geom)" % (MSSQL, table)
+
+
+def copy_to_mssql(table):
+    source = QgsVectorLayer("%s|layername=%s" % (GPKG, table), table, "ogr")
+    target = QgsVectorLayer(mssql_source(table), table, "mssql")
+    if not target.isValid():
+        raise SystemExit("SQL Server table %s is not valid: %s" % (table, target.dataProvider().error().message()))
+    features = []
+    for f in source.getFeatures():
+        g = QgsFeature(target.fields())
+        g.setGeometry(f.geometry())
+        for name in ("name", "owner", "status", "secret"):
+            g[name] = f[name]
+        features.append(g)
+    ok, _ = target.dataProvider().addFeatures(features)
+    if not ok:
+        raise SystemExit("copying %s to SQL Server failed: %s" % (table, target.dataProvider().errors()))
+    print("copied", len(features), "features to SQL Server table", table)
+
+
+if MSSQL:
+    for table in ("assets", "restricted", "big"):
+        copy_to_mssql(table)
+
+
 def project(path, layers):
     p = QgsProject()
     p.setCrs(QgsCoordinateReferenceSystem("EPSG:4326"))
     ids = []
     for name, table in layers:
-        layer = QgsVectorLayer("%s|layername=%s" % (GPKG, table), name, "ogr")
+        if MSSQL:
+            layer = QgsVectorLayer(mssql_source(table), name, "mssql")
+        else:
+            layer = QgsVectorLayer("%s|layername=%s" % (GPKG, table), name, "ogr")
         if not layer.isValid():
             raise SystemExit("layer %s is not valid" % name)
         p.addMapLayer(layer)
