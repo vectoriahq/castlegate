@@ -1,0 +1,10 @@
+{
+  "rows": [
+    { "who": { "email": "alice@example.org" }, "layer": "assets", "may": ["read", "insert", "update", "move", "delete"], "view": null, "edit": "\"owner\" = {{email}}", "hidden": [], "readonly": [] },
+    { "who": { "email": "alice@example.org" }, "layer": "restricted", "may": ["read"], "view": null, "edit": null },
+    { "who": { "email": "alice@example.org" }, "layer": "big", "may": ["read"], "view": "\"owner\" = {{email}}", "edit": null },
+    { "who": { "email": "bob@example.org" }, "layer": "assets", "may": ["read", "update"], "view": "\"owner\" = {{email}}", "edit": "\"owner\" = {{email}}", "hidden": ["secret"], "readonly": ["status"] },
+    { "who": { "group": "11111111-2222-3333-4444-555555555555" }, "layer": "assets", "may": ["read"], "view": null, "edit": null },
+    { "who": { "group": "11111111-2222-3333-4444-555555555555" }, "layer": "big", "may": ["read"], "view": "regexp_match(\"owner\", '^' || {{email}})", "edit": null }
+  ]
+}
