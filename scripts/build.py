@@ -3,7 +3,8 @@
   python scripts/build.py [output folder]
 
 A QGIS plugin is installed as one self-contained folder, so the shared core is
-copied into it here rather than installed beside it. Writes
+copied into it here rather than installed beside it, and so is the status check
+from install/common/, as tools/check.py. Writes
 <output>/castlegate_server/ and <output>/castlegate_server-<version>.zip; the
 output folder defaults to build/.
 """
@@ -25,6 +26,9 @@ def build(out):
         shutil.rmtree(plugin)
     shutil.copytree(ROOT / "server" / "castlegate_server", plugin, ignore=IGNORE)
     shutil.copytree(ROOT / "core", plugin / "core", ignore=IGNORE)
+    # The status check every install profile ends with, so it ships with the plugin.
+    (plugin / "tools").mkdir()
+    shutil.copy2(ROOT / "install" / "common" / "check.py", plugin / "tools" / "check.py")
     metadata = configparser.ConfigParser()
     metadata.read(plugin / "metadata.txt", encoding="utf-8")
     version = metadata["general"]["version"]
