@@ -89,19 +89,21 @@ jobs:
             -PluginZip build/castlegate_server-0.1.0.zip -DataFolder C:\castlegate\data -CheckMap C:\castlegate\data\castlegate.qgs `
             -Environment @{ SSL_CERT_FILE = 'C:\castlegate\tls\issuer.pem'; QGIS_SERVER_LOG_LEVEL = '0' }
 
-      - name: Check the pool cannot write the plugin or its CORS rule
+      - name: Check no one but administrators can change the plugin or its CORS rule
         shell: powershell
         run: |
-          $identity = 'IIS AppPool\GroundworkQgisServer'
-          # Only the flags that let it change something: Modify and FullControl also carry the read flags.
+          # Only the flags that let someone change something: Modify and FullControl also carry the read flags.
           $write = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteAttributes, WriteExtendedAttributes, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership'
-          foreach ($path in 'C:\Groundwork\IIS\QgisServer\plugins\castlegate_server\plugin.py', 'C:\Groundwork\IIS\QgisServer\web.config', 'C:\Groundwork\IIS\QgisServer\logs') {
-            $rules = (Get-Acl $path).Access | Where-Object { $_.IdentityReference.Value -eq $identity -and $_.AccessControlType -eq 'Allow' -and ($_.FileSystemRights -band $write) }
-            $can = [bool]$rules
-            "$path writable by the pool: $can"
-            if ($path -like '*\logs' -and -not $can) { throw "the pool cannot write its log folder" }
-            if ($path -notlike '*\logs' -and $can) { throw "the pool can write $path" }
+          $trusted = 'BUILTIN\Administrators', 'NT AUTHORITY\SYSTEM'
+          $root = 'C:\Groundwork\IIS\QgisServer'
+          foreach ($path in $root, "$root\plugins", "$root\plugins\castlegate_server", "$root\plugins\castlegate_server\plugin.py", "$root\web.config") {
+            $writers = (Get-Acl $path).Access | Where-Object { $_.AccessControlType -eq 'Allow' -and ($_.FileSystemRights -band $write) -and $_.IdentityReference.Value -notin $trusted }
+            "$path : writable by $(@($writers | ForEach-Object { $_.IdentityReference.Value }) -join ', ')"
+            if ($writers) { throw "$path can be changed by someone other than administrators" }
           }
+          $logs = (Get-Acl "$root\logs").Access | Where-Object { $_.IdentityReference.Value -eq 'IIS AppPool\GroundworkQgisServer' -and ($_.FileSystemRights -band $write) }
+          if (-not $logs) { throw 'the pool cannot write its log folder' }
+          'only administrators and the system can change the folder; the pool writes logs\ alone'
 
       - name: Check it through IIS
         run: node tests/iis/run.mjs C:\castlegate\tls\issuer.pfx castlegate-tests

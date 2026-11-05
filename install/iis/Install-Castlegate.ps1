@@ -122,7 +122,9 @@ if ($PSCmdlet.ShouldProcess($Root, 'create the folder and unpack the plugin')) {
     }
     $target = Join-Path $Plugins 'castlegate_server'
     if (Test-Path $target) { Remove-Item $target -Recurse -Force }
-    Move-Item (Join-Path $unpack 'castlegate_server') $target
+    # Copied, not moved: a move within a drive keeps the temporary folder's rights, which only
+    # this user has, so QGIS Server's account could not see the plugin.
+    Copy-Item (Join-Path $unpack 'castlegate_server') $target -Recurse
     Remove-Item $unpack -Recurse -Force
     $version = (Select-String -Path (Join-Path $target 'metadata.txt') -Pattern '^version=(.+)$').Matches[0].Groups[1].Value
     Say "Castlegate Server $version is in $target"
@@ -164,6 +166,8 @@ $Logs = Join-Path $Root 'logs'
 $vars['QGIS_SERVER_LOG_FILE'] = Join-Path $Logs 'qgis_server.log'
 # Warning keeps the plugin's audit lines, which it writes at Warning.
 $vars['QGIS_SERVER_LOG_LEVEL'] = '1'
+# The plugin folder is read-only to the server, so Python writes no compiled copies there.
+$vars['PYTHONDONTWRITEBYTECODE'] = '1'
 $vars['CASTLEGATE_ISSUER'] = if ($Issuer) { $Issuer } else { "https://login.microsoftonline.com/$TenantId/v2.0" }
 $vars['CASTLEGATE_AUDIENCE'] = $ClientId
 $vars['CASTLEGATE_SCOPE'] = $Scope
@@ -223,6 +227,8 @@ if ($PSCmdlet.ShouldProcess($Location, 'create the application and its handler m
         scriptProcessor = "$Exe|$FastCgiArguments"; resourceType = 'Unspecified'; requireAccess = 'Script'
     }
     Say "requests to $AppPath go to $Exe|$FastCgiArguments"
+    # Anonymous requests run as the pool's account, not IIS's IUSR, which has no rights on the folder.
+    Set-WebConfigurationProperty -PSPath $AppHost -Location $Location -Filter 'system.webServer/security/authentication/anonymousAuthentication' -Name userName -Value ''
 }
 
 # ---- the CORS module and rule ------------------------------------------------------------
@@ -274,14 +280,20 @@ if ($PSCmdlet.ShouldProcess((Join-Path $Root 'web.config'), "write the CORS rule
 
 # ---- rights, restart, check --------------------------------------------------------------
 
-if ($PSCmdlet.ShouldProcess($identity, 'grant read rights on the folder, and write rights on its logs folder and the data folders')) {
-    # Read only on the folder: the plugin and web.config must not be writable by the process
-    # that answers requests, which could otherwise remove the plugin or widen the CORS rule.
-    # /grant:r replaces whatever an earlier run granted.
+if ($PSCmdlet.ShouldProcess($Root, "set the folder's rights: $identity may read it and write only its logs folder")) {
+    # The folder does not inherit from the drive, whose rights let any local user add files: the
+    # process that answers requests must not be able to change or add to the plugin, or widen the
+    # CORS rule in web.config. So it has exactly these, replacing whatever was there:
+    # administrators and the system in full, the pool's account read, and write in logs\ alone.
     New-Item -ItemType Directory -Force $Logs | Out-Null
-    icacls $Root /grant:r "${identity}:(OI)(CI)RX" | Out-Null
+    $grants = @('*S-1-5-32-544:(OI)(CI)F', '*S-1-5-18:(OI)(CI)F', "${identity}:(OI)(CI)RX")
+    # Everything inside takes its rights from the folder alone, then the folder gets its own.
+    icacls $Root /reset /T /C /Q | Out-Null
+    icacls $Root /inheritance:r /grant:r @grants | Out-Null
+    if ($LASTEXITCODE -ne 0) { Stop-Install "could not set the rights on $Root." }
     icacls $Logs /grant:r "${identity}:(OI)(CI)M" | Out-Null
     foreach ($folder in $DataFolder) { icacls $folder /grant "${identity}:(OI)(CI)M" | Out-Null; Say "$identity may write $folder" }
+    Say "$identity may read $Root and write only $Logs"
 }
 
 if ($PSCmdlet.ShouldProcess($Pool, 'recycle the pool')) {
@@ -292,7 +304,8 @@ if ($PSCmdlet.ShouldProcess($Pool, 'recycle the pool')) {
 $python = Join-Path $o4w['PYTHONHOME'] 'python.exe'
 $check = Join-Path $Plugins 'castlegate_server\tools\check.py'
 $address = "http://localhost$AppPath"
-if ($CheckMap) {
+# Not in a -WhatIf preview, which has changed nothing to check.
+if ($CheckMap -and -not $WhatIfPreference) {
     Say "status check against $address"
     & cmd /c "call `"$OSGeo4WRoot\bin\o4w_env.bat`" >nul 2>&1 && `"$python`" `"$check`" $address --map `"$CheckMap`" --origin $Origin"
     if ($LASTEXITCODE -ne 0) { Stop-Install "the status check failed; the server log is $($vars['QGIS_SERVER_LOG_FILE'])." }
