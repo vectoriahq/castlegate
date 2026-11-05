@@ -212,10 +212,11 @@ def combine(rows, person, quote):
     """The Answer for one person from the rows naming them on one layer; the most permissive wins.
 
     A row widens only what it grants, and each right is combined over the rows
-    granting that right alone. A row's see filter and hidden fields count only
-    for seeing; its edit filter only for the edits it grants, each separately;
-    its read-only fields only for an add if it grants add, and for a change if
-    it grants change. So a row granting one thing cannot loosen the conditions
+    granting that right alone. A row's see filter counts only for seeing; its
+    hidden fields for seeing and for any add or change it grants; its edit
+    filter only for the edits it grants, each separately; its read-only fields
+    only for an add if it grants add, and for a change if it grants change. So
+    a row granting one thing cannot loosen the conditions
     another row put on something else.
     """
     if not rows:
