@@ -494,7 +494,8 @@ async function checkProfile() {
   const origin = check(["--origin", "https://app.groundwork.do"]);
   record("check-origin", origin.status === 0, `check.py --origin https://app.groundwork.do: exit ${origin.status}: ${origin.stdout.trim().replace(/\n/g, " | ").slice(0, 500)}`);
   const other = await fetch(`${BASE}${OWS}?SERVICE=CASTLEGATE&REQUEST=Status&MAP=${MAP}`, { method: "OPTIONS", headers: { Origin: "https://elsewhere.example", "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "authorization" } });
-  record("preflight-other-origin-refused", other.status === 403 && !other.headers.get("access-control-allow-origin"), `a preflight from another origin: status ${other.status}, Allow-Origin ${other.headers.get("access-control-allow-origin")}`);
+  const cors = [...other.headers.keys()].filter((k) => k.startsWith("access-control-"));
+  record("preflight-other-origin-refused", other.status === 403 && cors.length === 0, `a preflight from another origin: status ${other.status}, Access-Control headers [${cors.join(", ")}]`);
   const health = docker(["exec", "castlegate-server", "sh", "-c", `python3 /io/plugins/castlegate_server/tools/check.py http://localhost/ows/ --map "$CASTLEGATE_CHECK_MAP"`], { allowFail: true });
   record("profile-health-check", health.status === 0, `the image's health check command: exit ${health.status}: ${health.stdout.trim()}`);
 }
