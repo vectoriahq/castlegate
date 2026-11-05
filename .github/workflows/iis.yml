@@ -80,14 +80,6 @@ jobs:
           ./tests/iis/New-ExistingServer.ps1
           ./tests/iis/Get-ExistingServer.ps1 | Set-Content C:\castlegate\existing-before.txt
 
-      - name: Plant a stray plugin where the install will go
-        shell: powershell
-        run: |
-          # The install must replace the plugins folder whole, so this must not survive it.
-          New-Item -ItemType Directory -Force C:\Groundwork\IIS\QgisServer\plugins\planted | Out-Null
-          Set-Content C:\Groundwork\IIS\QgisServer\plugins\planted\__init__.py 'def serverClassFactory(iface): raise SystemExit'
-          Set-Content C:\Groundwork\IIS\QgisServer\plugins\planted\metadata.txt "[general]`nname=planted`nserver=True`nversion=1"
-
       - name: Install Castlegate Server
         # Windows PowerShell 5.1, as IT runs it: the WebAdministration module's IIS: drive needs it.
         shell: powershell
@@ -115,10 +107,9 @@ jobs:
             "$path : owned by $owner"
             if ($owner -notin $trusted) { throw "$path is owned by $owner" }
           }
-          if (Test-Path "$root\plugins\planted") { throw 'the stray plugin planted before the install is still there' }
           $logs = (Get-Acl "$root\logs").Access | Where-Object { $_.IdentityReference.Value -eq 'IIS AppPool\GroundworkQgisServer' -and ($_.FileSystemRights -band $write) }
           if (-not $logs) { throw 'the pool cannot write its log folder' }
-          'only administrators and the system own or can change the folder; the pool writes logs\ alone; the stray plugin is gone'
+          'only administrators and the system own or can change the folder; the pool writes logs\ alone'
 
       - name: Check it through IIS
         run: node tests/iis/run.mjs C:\castlegate\tls\issuer.pfx castlegate-tests
@@ -132,6 +123,15 @@ jobs:
           if ($diff) { $diff | Format-Table -AutoSize | Out-String; throw 'Install-Castlegate.ps1 changed the existing QGIS Server' }
           'the existing QGIS Server is as it was'
 
+      - name: Plant a stray plugin beside Castlegate
+        shell: powershell
+        run: |
+          # As an administrator could, inside the protected folder: the second run must replace the
+          # plugins folder whole, so this must not survive it.
+          New-Item -ItemType Directory -Force C:\Groundwork\IIS\QgisServer\plugins\planted | Out-Null
+          Set-Content C:\Groundwork\IIS\QgisServer\plugins\planted\__init__.py 'def serverClassFactory(iface): raise SystemExit'
+          Set-Content C:\Groundwork\IIS\QgisServer\plugins\planted\metadata.txt "[general]`nname=planted`nserver=True`nversion=1"
+
       - name: Run the install a second time
         # Windows PowerShell 5.1, as IT runs it: the WebAdministration module's IIS: drive needs it.
         shell: powershell
@@ -140,6 +140,13 @@ jobs:
             -Scope access -Issuer https://localhost:8443/9a9a9a9a-0000-4000-8000-000000000001/v2.0 `
             -PluginZip build/castlegate_server-0.1.0.zip -DataFolder C:\castlegate\data -CheckMap C:\castlegate\data\castlegate.qgs `
             -Environment @{ SSL_CERT_FILE = 'C:\castlegate\tls\issuer.pem'; QGIS_SERVER_LOG_LEVEL = '0' }
+
+      - name: The second run left Castlegate alone in the plugins folder
+        shell: powershell
+        run: |
+          $left = @(Get-ChildItem C:\Groundwork\IIS\QgisServer\plugins | ForEach-Object Name)
+          "plugins holds: $($left -join ', ')"
+          if ($left -join ',' -ne 'castlegate_server') { throw 'the plugins folder holds more than Castlegate Server' }
 
       - name: A rerun with a mistyped zip stops and leaves the server working
         shell: powershell
