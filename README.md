@@ -6,4 +6,11 @@ The design and its decisions are in Groundwork's plan, `docs/plans/qgis-server-a
 
 ## What is here
 
-- `spike/`: the package 1 prototype and the harness that runs its checks against the Docker QGIS Server. The server plugin itself is package 2 and is not started.
+- `core/`: what every Castlegate product shares, in plain Python with no QGIS: the rules table's shape (`docs/rules-table.md`), the sign-in check that turns a token into a person and their groups, and how the rows naming a person combine.
+- `tests/core/`: tests of `core/`. Run them with any Python from 3.12:
+
+  ```bash
+  python -m unittest discover -s tests/core -t .
+  ```
+
+- `spike/`: the package 1 prototype and the harness that runs its checks against the Docker QGIS Server.
