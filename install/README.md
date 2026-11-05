@@ -12,6 +12,7 @@ Each folder here does those four jobs for one web server, and each ends with the
 | Folder | State |
 | --- | --- |
 | [`common/`](common/README.md) | The status check every profile ends with |
+| [`iis/`](iis/README.md) | Complete: one script beside an existing QGIS Server, tested on Windows Server 2022 |
 | [`docker/`](docker/README.md) | Complete; the plugin's own tests run on it |
 | [`apache/`](apache/README.md) | A guide, not yet tested |
 | [`nginx/`](nginx/README.md) | A guide, not yet tested |
