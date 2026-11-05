@@ -100,7 +100,83 @@ if ($Uninstall) {
     exit 0
 }
 
-# ---- checks an install needs ------------------------------------------------------------
+# ---- the folder rules --------------------------------------------------------------------
+#
+# No one but administrators and the system may change $Root or anything in it, or rename,
+# delete or re-permission any folder above it, and $Plugins holds Castlegate Server alone.
+# Everything that changes these folders goes through Protect-Ancestors and Set-FolderRule.
+
+$Admins = '*S-1-5-32-544'
+$System = '*S-1-5-18'
+$Users = '*S-1-5-32-545'
+# Administrators, the system, TrustedInstaller, and whoever is running this as administrator.
+$Trusted = 'S-1-5-32-544', 'S-1-5-18', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464',
+    [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+# Rights on a folder that let someone replace what is in it or below it.
+$Replacing = [Security.AccessControl.FileSystemRights]'Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership'
+
+function Get-Ancestors {
+    # The folders above $Root, nearest first, the drive's root last.
+    $found = @()
+    $parent = Split-Path ([IO.Path]::GetFullPath($Root)) -Parent
+    while ($parent) { $found += $parent; $parent = Split-Path $parent -Parent }
+    $found
+}
+
+function Protect-Ancestors {
+    $ancestors = @(Get-Ancestors)
+    # Folders this creates above $Root are protected like $Root: read for everyone, changed by administrators.
+    $creatable = @($ancestors | Select-Object -SkipLast 1 | Sort-Object Length)
+    foreach ($folder in $creatable) {
+        if (-not (Test-Path $folder)) {
+            New-Item -ItemType Directory $folder | Out-Null
+            icacls $folder /setowner $Admins /C /Q | Out-Null
+            icacls $folder /inheritance:r /grant:r "${Admins}:(OI)(CI)F" "${System}:(OI)(CI)F" "${Users}:(OI)(CI)RX" | Out-Null
+            Say "created $folder for administrators alone to change"
+        }
+    }
+    Assert-Ancestors
+}
+
+function Assert-Ancestors {
+    # Each folder above that exists must leave $Root where it is: a trusted owner, and no one
+    # else able to delete it, delete what is in it, or change its rights.
+    foreach ($folder in @(Get-Ancestors | Where-Object { Test-Path $_ })) {
+        $acl = Get-Acl $folder
+        $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($owner -notin $Trusted) {
+            Stop-Install "$folder is owned by $(([Security.Principal.SecurityIdentifier]$owner).Translate([Security.Principal.NTAccount])), who could replace $Root. Give it to administrators, or pass another -Root."
+        }
+        $risky = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object {
+            $_.AccessControlType -eq 'Allow' -and
+            -not ($_.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and
+            ($_.FileSystemRights -band $Replacing) -and
+            $_.IdentityReference.Value -notin $Trusted
+        })
+        if ($risky.Count) {
+            $who = ($risky | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.NTAccount]).Value } | Sort-Object -Unique) -join ', '
+            Stop-Install "$folder lets $who delete or re-permission what is in it, so they could replace $Root. Remove those rights, or pass another -Root."
+        }
+    }
+}
+
+function Set-FolderRule {
+    # An owner can always rewrite a folder's rights, so administrators own everything first.
+    New-Item -ItemType Directory -Force $Root, $Logs | Out-Null
+    icacls $Root /setowner $Admins /T /C /Q | Out-Null
+    # Everything inside then takes its rights from $Root alone, and $Root gets exactly these:
+    # administrators and the system in full, the pool's account read, and write in logs\ alone.
+    icacls $Root /reset /T /C /Q | Out-Null
+    icacls $Root /inheritance:r /grant:r "${Admins}:(OI)(CI)F" "${System}:(OI)(CI)F" "${identity}:(OI)(CI)RX" | Out-Null
+    if ($LASTEXITCODE -ne 0) { Stop-Install "could not set the rights on $Root." }
+    icacls $Logs /grant:r "${identity}:(OI)(CI)M" | Out-Null
+}
+
+# ---- checks an install needs, before anything changes -----------------------------------
+#
+# Everything that can fail on bad input or a missing part happens here, so a mistake on a
+# rerun stops with the working install untouched: the folders above $Root, the zip, OSGeo4W's
+# environment and the CORS module.
 
 if (-not (Get-WebGlobalModule -Name FastCgiModule -ErrorAction SilentlyContinue)) {
     Stop-Install "IIS has no FastCGI module. Add the CGI role service to IIS (Server Manager, Web Server, Application Development, CGI) and run this again."
@@ -114,76 +190,20 @@ if ($fullRoot.StartsWith($fullO4w, [StringComparison]::OrdinalIgnoreCase)) {
     Stop-Install "-Root is inside $OSGeo4WRoot. The plugin must never go under OSGeo4W, whose plugin folder every QGIS Server on this machine searches."
 }
 
-# ---- the folder rule ---------------------------------------------------------------------
+# The folders above $Root that exist already.
+Assert-Ancestors
 
-# Only administrators and the system can change anything in $Root, and $Plugins holds
-# Castlegate Server alone. Everything below that changes the folder goes through these two.
-$Admins = '*S-1-5-32-544'
-$System = '*S-1-5-18'
-# Administrators, the system, TrustedInstaller, and whoever is running this as administrator.
-$TrustedOwners = 'S-1-5-32-544', 'S-1-5-18', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464',
-    [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-
-function Assert-SafeAncestors {
-    # Whoever owns a folder above $Root can rename $Root away and put another in its place.
-    $parent = Split-Path ([IO.Path]::GetFullPath($Root)) -Parent
-    while ($parent -and (Split-Path $parent -Parent)) {
-        if (Test-Path $parent) {
-            $owner = (Get-Acl $parent).GetOwner([Security.Principal.SecurityIdentifier]).Value
-            if ($owner -notin $TrustedOwners) {
-                Stop-Install "$parent is owned by $((New-Object Security.Principal.SecurityIdentifier $owner).Translate([Security.Principal.NTAccount])), not by administrators, so they could replace $Root. Give it to administrators (icacls `"$parent`" /setowner *S-1-5-32-544) or pass another -Root."
-            }
-        }
-        $parent = Split-Path $parent -Parent
-    }
-}
-
-function Set-FolderRule([switch]$WithPool) {
-    # Folders this creates above $Root go to administrators too, so a later run finds them trusted.
-    $missing = @()
-    $parent = Split-Path ([IO.Path]::GetFullPath($Root)) -Parent
-    while ($parent -and (Split-Path $parent -Parent)) {
-        if (-not (Test-Path $parent)) { $missing += $parent }
-        $parent = Split-Path $parent -Parent
-    }
-    # An owner can always rewrite a folder's rights, so administrators own everything first.
-    New-Item -ItemType Directory -Force $Root | Out-Null
-    if ($WithPool) { New-Item -ItemType Directory -Force $Logs | Out-Null }
-    foreach ($folder in $missing) { icacls $folder /setowner $Admins /C /Q | Out-Null }
-    icacls $Root /setowner $Admins /T /C /Q | Out-Null
-    # Everything inside then takes its rights from $Root alone, and $Root gets exactly these.
-    icacls $Root /reset /T /C /Q | Out-Null
-    $grants = @("${Admins}:(OI)(CI)F", "${System}:(OI)(CI)F")
-    if ($WithPool) { $grants += "${identity}:(OI)(CI)RX" }
-    icacls $Root /inheritance:r /grant:r @grants | Out-Null
-    if ($LASTEXITCODE -ne 0) { Stop-Install "could not set the rights on $Root." }
-    if ($WithPool) { icacls $Logs /grant:r "${identity}:(OI)(CI)M" | Out-Null }
-}
-
-# ---- the folder and the plugin -----------------------------------------------------------
-
-if ($PSCmdlet.ShouldProcess($Root, 'create the folder and unpack the plugin')) {
-    Assert-SafeAncestors
-    Set-FolderRule
-    # The plugins folder is replaced whole, so nothing else in it survives to load beside Castlegate.
-    if (Test-Path $Plugins) { Remove-Item $Plugins -Recurse -Force }
-    New-Item -ItemType Directory -Force $Plugins | Out-Null
-    $unpack = Join-Path ([IO.Path]::GetTempPath()) ("castlegate-" + [guid]::NewGuid())
-    Expand-Archive -Path $PluginZip -DestinationPath $unpack
-    if (-not (Test-Path (Join-Path $unpack 'castlegate_server\metadata.txt'))) {
-        Remove-Item $unpack -Recurse -Force
-        Stop-Install "$PluginZip does not hold castlegate_server\metadata.txt; pass the release zip."
-    }
-    $target = Join-Path $Plugins 'castlegate_server'
-    # Copied, not moved: a move within a drive keeps the temporary folder's rights, which only
-    # this user has, so QGIS Server's account could not see the plugin.
-    Copy-Item (Join-Path $unpack 'castlegate_server') $target -Recurse
+# The release zip, unpacked and checked in a temporary folder.
+if (-not (Test-Path $PluginZip -PathType Leaf)) { Stop-Install "there is no file at $PluginZip; pass the release zip." }
+$unpack = Join-Path ([IO.Path]::GetTempPath()) ("castlegate-" + [guid]::NewGuid())
+try { Expand-Archive -Path $PluginZip -DestinationPath $unpack } catch { Stop-Install "$PluginZip could not be unpacked: $($_.Exception.Message)" }
+$unpacked = Join-Path $unpack 'castlegate_server'
+$metadata = Join-Path $unpacked 'metadata.txt'
+if (-not (Test-Path $metadata) -or -not (Test-Path (Join-Path $unpacked '__init__.py'))) {
     Remove-Item $unpack -Recurse -Force
-    $version = (Select-String -Path (Join-Path $target 'metadata.txt') -Pattern '^version=(.+)$').Matches[0].Groups[1].Value
-    Say "Castlegate Server $version is in $target"
+    Stop-Install "$PluginZip does not hold castlegate_server\ with metadata.txt and __init__.py; pass the release zip."
 }
-
-# ---- OSGeo4W's environment ---------------------------------------------------------------
+$version = (Select-String -Path $metadata -Pattern '^version=(.+)$').Matches[0].Groups[1].Value
 
 # What o4w_env.bat adds or changes, as OSGeo4W's own Apache configuration has QGIS Server run
 # with it. It runs from a clean start: Windows' own folders as PATH and no Python settings, so
@@ -227,6 +247,22 @@ $vars['CASTLEGATE_SCOPE'] = $Scope
 if ($TenantId) { $vars['CASTLEGATE_TENANT'] = $TenantId }
 foreach ($k in $Environment.Keys) { $vars[$k] = [string]$Environment[$k] }
 
+if (-not (Get-WebGlobalModule -Name CorsModule -ErrorAction SilentlyContinue)) {
+    if ($PSCmdlet.ShouldProcess('IIS CORS module', 'download from Microsoft and install')) {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $msi = Join-Path ([IO.Path]::GetTempPath()) 'IISCORS_amd64.msi'
+        Invoke-WebRequest -UseBasicParsing -Uri 'https://go.microsoft.com/fwlink/?linkid=862444' -OutFile $msi
+        $signature = Get-AuthenticodeSignature $msi
+        if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+            Stop-Install "the downloaded IIS CORS module is not validly signed by Microsoft ($($signature.Status)); install it yourself from https://www.iis.net/downloads/microsoft/iis-cors-module and run this again."
+        }
+        $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/qn', '/norestart' -Wait -PassThru
+        if ($p.ExitCode -ne 0) { Stop-Install "the IIS CORS module's installer ended with code $($p.ExitCode)." }
+        Remove-Item $msi -Force
+        Say 'installed the IIS CORS module'
+    }
+}
+
 # ---- the pool ----------------------------------------------------------------------------
 
 $identity = if ($Credential) { $Credential.UserName } else { "IIS AppPool\$Pool" }
@@ -242,6 +278,24 @@ if ($PSCmdlet.ShouldProcess($Pool, "create or update the application pool, runni
     }
     Say "the pool runs as $identity"
 }
+
+# ---- the folder and the plugin -----------------------------------------------------------
+
+if ($PSCmdlet.ShouldProcess($Root, "protect the folder and put Castlegate Server $version in it")) {
+    Protect-Ancestors
+    # The pool keeps its read rights throughout, so a server already running here stays up.
+    Set-FolderRule
+    # The new plugins folder is made beside the old one, then swapped in, so the plugins folder is
+    # replaced whole and nothing else in it survives to load beside Castlegate. Copied, not moved:
+    # a move within a drive keeps the temporary folder's rights, which only this user has.
+    $staging = Join-Path $Root ('plugins-' + [guid]::NewGuid())
+    New-Item -ItemType Directory $staging | Out-Null
+    Copy-Item $unpacked (Join-Path $staging 'castlegate_server') -Recurse
+    if (Test-Path $Plugins) { Remove-Item $Plugins -Recurse -Force }
+    Rename-Item $staging (Split-Path $Plugins -Leaf)
+    Say "Castlegate Server $version is in $(Join-Path $Plugins 'castlegate_server')"
+}
+Remove-Item $unpack -Recurse -Force -ErrorAction SilentlyContinue
 
 # ---- the FastCGI entry -------------------------------------------------------------------
 
@@ -283,23 +337,7 @@ if ($PSCmdlet.ShouldProcess($Location, 'create the application and its handler m
     Set-WebConfigurationProperty -PSPath $AppHost -Location $Location -Filter 'system.webServer/security/authentication/anonymousAuthentication' -Name userName -Value ''
 }
 
-# ---- the CORS module and rule ------------------------------------------------------------
-
-if (-not (Get-WebGlobalModule -Name CorsModule -ErrorAction SilentlyContinue)) {
-    if ($PSCmdlet.ShouldProcess('IIS CORS module', 'download from Microsoft and install')) {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $msi = Join-Path ([IO.Path]::GetTempPath()) 'IISCORS_amd64.msi'
-        Invoke-WebRequest -UseBasicParsing -Uri 'https://go.microsoft.com/fwlink/?linkid=862444' -OutFile $msi
-        $signature = Get-AuthenticodeSignature $msi
-        if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
-            Stop-Install "the downloaded IIS CORS module is not validly signed by Microsoft ($($signature.Status)); install it yourself from https://www.iis.net/downloads/microsoft/iis-cors-module and run this again."
-        }
-        $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/qn', '/norestart' -Wait -PassThru
-        if ($p.ExitCode -ne 0) { Stop-Install "the IIS CORS module's installer ended with code $($p.ExitCode)." }
-        Remove-Item $msi -Force
-        Say 'installed the IIS CORS module'
-    }
-}
+# ---- the CORS rule ----------------------------------------------------------------------
 
 if ($PSCmdlet.ShouldProcess((Join-Path $Root 'web.config'), "write the CORS rule for $Origin")) {
     # The browser's preflight is answered here, because QGIS Server does not answer OPTIONS.
@@ -333,7 +371,8 @@ if ($PSCmdlet.ShouldProcess((Join-Path $Root 'web.config'), "write the CORS rule
 # ---- rights, restart, check --------------------------------------------------------------
 
 if ($PSCmdlet.ShouldProcess($Root, "set the folder's rights: $identity may read it and write only its logs folder")) {
-    Set-FolderRule -WithPool
+    # Again, so web.config and anything else written since follow the rule.
+    Set-FolderRule
     foreach ($folder in $DataFolder) { icacls $folder /grant "${identity}:(OI)(CI)M" | Out-Null; Say "$identity may write $folder" }
     Say "only administrators and the system can change $Root; $identity reads it and writes only $Logs"
 }

@@ -141,6 +141,30 @@ jobs:
             -PluginZip build/castlegate_server-0.1.0.zip -DataFolder C:\castlegate\data -CheckMap C:\castlegate\data\castlegate.qgs `
             -Environment @{ SSL_CERT_FILE = 'C:\castlegate\tls\issuer.pem'; QGIS_SERVER_LOG_LEVEL = '0' }
 
+      - name: A rerun with a mistyped zip stops and leaves the server working
+        shell: powershell
+        run: |
+          & ./install/iis/Install-Castlegate.ps1 -TenantId 9a9a9a9a-0000-4000-8000-000000000001 -ClientId c0c0c0c0-0000-4000-8000-0000000000c0 `
+            -Scope access -Issuer https://localhost:8443/9a9a9a9a-0000-4000-8000-000000000001/v2.0 -PluginZip C:\no-such-release.zip
+          if ($LASTEXITCODE -eq 0) { throw 'the install went ahead with a zip that does not exist' }
+          $global:LASTEXITCODE = 0
+          C:\OSGeo4W\apps\Python312\python.exe install/common/check.py http://localhost/groundwork/qgisserver --map C:\castlegate\data\castlegate.qgs
+          if ($LASTEXITCODE -ne 0) { throw 'the stopped rerun left the server not answering' }
+
+      - name: An install under a folder anyone may change is refused
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force C:\unsafe | Out-Null
+          # Authenticated Users with Modify, as a freshly formatted data volume grants.
+          icacls C:\unsafe /grant '*S-1-5-11:(OI)(CI)M' | Out-Null
+          $out = & ./install/iis/Install-Castlegate.ps1 -TenantId 9a9a9a9a-0000-4000-8000-000000000001 -ClientId c0c0c0c0-0000-4000-8000-0000000000c0 `
+            -PluginZip build/castlegate_server-0.1.0.zip -Root C:\unsafe\Groundwork\QgisServer -Pool CastlegateUnsafeTest -AppPath /unsafe/qgisserver 6>&1 | Out-String
+          $out
+          if ($LASTEXITCODE -eq 0 -or $out -notmatch 'could replace') { throw 'the install went ahead under a folder anyone may change' }
+          Import-Module WebAdministration
+          if (Test-Path IIS:\AppPools\CastlegateUnsafeTest) { throw 'the refused install still created its pool' }
+          'refused, and nothing was created'
+
       - name: Uninstall, and the existing server still answers
         # Windows PowerShell 5.1, as IT runs it: the WebAdministration module's IIS: drive needs it.
         shell: powershell
