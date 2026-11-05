@@ -320,21 +320,15 @@ Remove-Item $unpack -Recurse -Force -ErrorAction SilentlyContinue
 if ($PSCmdlet.ShouldProcess("$Exe|$FastCgiArguments", 'create or replace the FastCGI entry')) {
     # IIS keys a FastCGI application by its program and arguments together, so this entry is
     # Groundwork's alone; an entry for the same program with other arguments is left as it is.
-    # Saved to applicationHost.config as one change, so no reader sees the entry half rebuilt.
-    Start-WebCommitDelay
-    try {
-        if (Get-WebConfiguration -PSPath $AppHost -Filter $FastCgiFilter) { Clear-WebConfiguration -PSPath $AppHost -Filter $FastCgiFilter }
-        Add-WebConfiguration -PSPath $AppHost -Filter 'system.webServer/fastCgi' -Value @{
-            fullPath = $Exe; arguments = $FastCgiArguments; maxInstances = 4
-            activityTimeout = 600; requestTimeout = 600; idleTimeout = 1800; instanceMaxRequests = 10000
-        }
-        foreach ($k in $vars.Keys) {
-            Add-WebConfiguration -PSPath $AppHost -Filter "$FastCgiFilter/environmentVariables" -Value @{ name = $k; value = [string]$vars[$k] }
-        }
-        Stop-WebCommitDelay -Commit $true
-    } catch {
-        Stop-WebCommitDelay -Commit $false
-        Stop-Install "the FastCGI entry could not be written, and was left as it was: $($_.Exception.Message)"
+    # Rebuilt while the pool is stopped (the pool step), so no QGIS Server process starts from an
+    # entry half rebuilt, and a run that stops part-way leaves the pool stopped.
+    if (Get-WebConfiguration -PSPath $AppHost -Filter $FastCgiFilter) { Clear-WebConfiguration -PSPath $AppHost -Filter $FastCgiFilter }
+    Add-WebConfiguration -PSPath $AppHost -Filter 'system.webServer/fastCgi' -Value @{
+        fullPath = $Exe; arguments = $FastCgiArguments; maxInstances = 4
+        activityTimeout = 600; requestTimeout = 600; idleTimeout = 1800; instanceMaxRequests = 10000
+    }
+    foreach ($k in $vars.Keys) {
+        Add-WebConfiguration -PSPath $AppHost -Filter "$FastCgiFilter/environmentVariables" -Value @{ name = $k; value = [string]$vars[$k] }
     }
     Say "the FastCGI entry $Exe|$FastCgiArguments has $($vars.Count) environment variables"
 }
