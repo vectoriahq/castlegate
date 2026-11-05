@@ -44,6 +44,33 @@ def server():
         s.server_close()
 
 
+@contextlib.contextmanager
+def raw_server(reply):
+    """A server that sends `reply` as bytes to every connection and closes it, HTTP or not."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    stop = threading.Event()
+
+    def serve():
+        while not stop.is_set():
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            with conn:
+                conn.recv(65536)
+                conn.sendall(reply)
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    try:
+        yield "http://127.0.0.1:%d/ows/" % listener.getsockname()[1]
+    finally:
+        stop.set()
+        listener.close()
+
+
 def run(argv, env=None):
     out = io.StringIO()
     with contextlib.redirect_stdout(out), unittest.mock.patch.dict("os.environ", env or {}, clear=False):
@@ -73,6 +100,20 @@ class ExitCodes(unittest.TestCase):
         self.assertEqual(code, 2, out)
         self.assertIn("PASS  Castlegate is loaded", out)
         self.assertIn("FAIL  could not reach", out)
+
+    def test_answers_that_never_arrive_whole(self):
+        # Review finding on #4: http.client's own errors escaped request() with a traceback.
+        replies = {
+            "not HTTP": b"this is not HTTP\r\n\r\n",
+            "a header line too long": b"HTTP/1.1 401 Unauthorized\r\nX: " + b"a" * 70000 + b"\r\n\r\n",
+            "a body cut short": b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort",
+            "a refusal's body cut short": b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nContent-Length: 100\r\n\r\nshort",
+        }
+        for name, reply in replies.items():
+            with raw_server(reply) as url:
+                code, out = run([url, "--map", "/p.qgs"])
+            self.assertEqual(code, 2, "%s: %s" % (name, out))
+            self.assertIn("FAIL  could not reach", out, name)
 
 
 if __name__ == "__main__":

@@ -38,19 +38,22 @@ class Unreachable(Exception):
 
 
 def request(url, method="GET", headers=None):
-    """(status, headers, body text) for one request; HTTP errors are answers, not failures.
+    """(status, headers, body text) for one request, or raise Unreachable.
 
-    Any failure to get an answer at all, such as a refused connection, a timeout or a
-    reset, raises Unreachable.
+    An HTTP error status is an answer, not a failure. Anything else that stops an
+    answer arriving whole raises Unreachable, and nothing else is raised: a refused
+    connection, a timeout, a reset, something that is not HTTP answering, a header
+    line too long, or a body cut short.
     """
     r = urllib.request.Request(url, method=method, headers=headers or {})
     try:
-        with _opener.open(r, timeout=30) as response:
-            return response.status, response.headers, response.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as e:
-        return e.code, e.headers, e.read().decode("utf-8", "replace")
-    except (OSError, ValueError) as e:  # URLError, timeouts and resets are OSErrors; a bad URL a ValueError
-        raise Unreachable(str(e))
+        try:
+            with _opener.open(r, timeout=30) as response:
+                return response.status, response.headers, response.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers, e.read().decode("utf-8", "replace")
+    except Exception as e:  # noqa: BLE001 - see the docstring: every failure here is the same failure
+        raise Unreachable("%s: %s" % (type(e).__name__, e))
 
 
 def status_url(base, project):
