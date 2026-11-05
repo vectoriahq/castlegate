@@ -5,9 +5,10 @@
 //   CASTLEGATE_BACKEND=mssql node tests/server/run.mjs [work folder]
 //
 // It builds the plugin (scripts/build.py) and the test projects, starts a stub
-// OpenID Connect issuer over HTTPS and QGIS Server with the plugin, runs each
-// check against http://localhost:8020 and prints one line per check. It exits 1
-// if any check fails.
+// OpenID Connect issuer over HTTPS and QGIS Server from the Docker install
+// profile's image (install/docker/) built on the image under test, runs each
+// check against http://localhost:8020, including install/common/check.py, and
+// prints one line per check. It exits 1 if any check fails.
 //
 // With CASTLEGATE_BACKEND=mssql the layers and rules tables live in SQL Server:
 // it builds the image in mssql/ from the chosen image, adding Microsoft's ODBC
@@ -28,6 +29,7 @@ const BASE_IMAGE = imageArg >= 0 ? args.splice(imageArg, 2)[1] : "qgis/qgis-serv
 const work = resolve(args[0] ?? join(root, ".work", "server"));
 const MSSQL = process.env.CASTLEGATE_BACKEND === "mssql";
 const IMAGE = MSSQL ? "castlegate-qgis-mssql" : BASE_IMAGE;
+const PROFILE_IMAGE = "castlegate-profile-test";
 const MSSQL_IMAGE = "mcr.microsoft.com/mssql/server:2022-latest";
 // A test password for this run's throwaway container, meeting SQL Server's complexity rule.
 const SA_PASSWORD = `Cg_${randomBytes(12).toString("hex")}_A1`;
@@ -124,6 +126,7 @@ const dirs = {
   live: join(work, "live"),
   issuer: join(work, "issuer"),
   tls: join(work, "tls"),
+  profile: join(work, "profile"),
 };
 
 function writeIssuer() {
@@ -191,10 +194,15 @@ async function prepare() {
   rmSync(work, { recursive: true, force: true });
   mkdirSync(dirs.pristine, { recursive: true });
   run("python3", [join(root, "scripts", "build.py"), dirs.build], { allowFail: false });
+  // The server under test is the Docker install profile's image, built on the image under test.
+  mkdirSync(dirs.profile, { recursive: true });
+  for (const f of ["Dockerfile", "castlegate-cors.conf"]) cpSync(join(root, "install", "docker", f), join(dirs.profile, f));
+  cpSync(join(dirs.build, "castlegate_server"), join(dirs.profile, "castlegate_server"), { recursive: true });
   docker(["rm", "-f", "castlegate-issuer", "castlegate-server", "castlegate-mssql"], { allowFail: true });
   docker(["network", "rm", NET], { allowFail: true });
   docker(["network", "create", NET]);
   if (MSSQL) await startSqlServer();
+  docker(["build", "-q", "--build-arg", `BASE=${IMAGE}`, "-t", PROFILE_IMAGE, dirs.profile]);
   docker([
     "run", "--rm", "--network", NET, "-e", "QT_QPA_PLATFORM=offscreen",
     // QGIS 4's image keeps its Python library outside the default path.
@@ -223,12 +231,12 @@ async function startServer({ plugin = true, env = {} } = {}) {
     CASTLEGATE_SCOPE: SCOPE,
     CASTLEGATE_TENANT: TENANT,
     SSL_CERT_FILE: "/tls/cert.pem",
+    CASTLEGATE_CHECK_MAP: MAP,
     ...env,
   };
   const dockerArgs = ["run", "-d", "--name", "castlegate-server", "--network", NET, "-p", `${PORT}:80`, "-v", `${dirs.live}:/io/data`, "-v", `${dirs.tls}:/tls:ro`];
-  if (plugin) dockerArgs.push("-v", `${dirs.build}:/io/plugins:ro`);
   for (const [k, v] of Object.entries(vars)) dockerArgs.push("-e", `${k}=${v}`);
-  dockerArgs.push(IMAGE);
+  dockerArgs.push(plugin ? PROFILE_IMAGE : IMAGE);
   docker(dockerArgs);
   // Files on a Windows bind mount show as root's with mode 644; QGIS Server runs as www-data.
   docker(["exec", "castlegate-server", "sh", "-c", "chmod a+rw /io/data /io/data/*"]);
@@ -473,6 +481,25 @@ async function checkProjects() {
   record("cache-constant-key", !after.includes("restricted"), `bob after alice sees [${after.join(", ")}]`);
 }
 
+// install/common/check.py, run as IT would run it, against this server.
+const check = (extra = [], env = {}) => run("python3", [join(root, "install", "common", "check.py"), `${BASE}${OWS}`, "--map", MAP, ...extra], { allowFail: true, env });
+
+async function checkProfile() {
+  const plain = check();
+  record("check-loaded", plain.status === 0 && /Castlegate is loaded/.test(plain.stdout), `check.py with no token: exit ${plain.status}: ${plain.stdout.trim().replace(/\n/g, " | ")}`);
+  const signed = check([], { CASTLEGATE_TOKEN: tok("carol") });
+  record("check-signed-in", signed.status === 0 && /the rules load from castlegate_rules: 11 rows/.test(signed.stdout), `check.py with carol's token: exit ${signed.status}: ${signed.stdout.trim().replace(/\n/g, " | ").slice(0, 400)}`);
+  const refused = check([], { CASTLEGATE_TOKEN: tok("alice", { aud: "api://other" }) });
+  record("check-bad-token", refused.status === 1 && /the token is refused/.test(refused.stdout), `check.py with a token for another app: exit ${refused.status}`);
+  const origin = check(["--origin", "https://app.groundwork.do"]);
+  record("check-origin", origin.status === 0, `check.py --origin https://app.groundwork.do: exit ${origin.status}: ${origin.stdout.trim().replace(/\n/g, " | ").slice(0, 500)}`);
+  const other = await fetch(`${BASE}${OWS}?SERVICE=CASTLEGATE&REQUEST=Status&MAP=${MAP}`, { method: "OPTIONS", headers: { Origin: "https://elsewhere.example", "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "authorization" } });
+  const cors = [...other.headers.keys()].filter((k) => k.startsWith("access-control-"));
+  record("preflight-other-origin-refused", other.status === 403 && cors.length === 0, `a preflight from another origin: status ${other.status}, Access-Control headers [${cors.join(", ")}]`);
+  const health = docker(["exec", "castlegate-server", "sh", "-c", `python3 /io/plugins/castlegate_server/tools/check.py http://localhost/ows/ --map "$CASTLEGATE_CHECK_MAP"`], { allowFail: true });
+  record("profile-health-check", health.status === 0, `the image's health check command: exit ${health.status}: ${health.stdout.trim()}`);
+}
+
 function checkLogs() {
   const text = logs();
   const audit = text.split("\n").filter((l) => /audit id=/.test(l));
@@ -499,6 +526,7 @@ async function main() {
   await checkSaves();
   await checkServices();
   await checkProjects();
+  await checkProfile();
   checkLogs();
   writeFileSync(join(work, "server-log.txt"), logs());
 
@@ -506,6 +534,8 @@ async function main() {
   await startServer({ plugin: false });
   const open = await gps(undefined);
   record("stock-serves-everyone", null, `with no plugin, a request with no token gets status ${open.status} and [${names(open.text).join(", ")}]`);
+  const stockCheck = check();
+  record("check-not-loaded", stockCheck.status === 1 && /NOT loaded/.test(stockCheck.stdout), `check.py against a server with no plugin: exit ${stockCheck.status}: ${stockCheck.stdout.trim()}`);
   const stockSplit = await post(undefined, update("assets", 2, { "sec<x/>ret": "split name" }));
   const afterSplit = (await getFeatures(undefined, "assets", { FEATUREID: "assets.2" })).json?.features?.[0]?.properties?.secret;
   record("stock-reads-split-name", null, `with no plugin, an update naming "sec<x/>ret" ${succeeded(stockSplit) ? "succeeded" : "failed"} and secret is now "${afterSplit}"`);

@@ -4,3 +4,6 @@ __pycache__/
 node_modules/
 .claude/
 build/
+install/docker/castlegate_server/
+install/docker/data/
+install/docker/.env

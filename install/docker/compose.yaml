@@ -1,0 +1,24 @@
+# Castlegate Server in the qgis/qgis-server image (README.md). Set the values in a .env file
+# beside this one: CASTLEGATE_TENANT, CASTLEGATE_AUDIENCE, CASTLEGATE_SCOPE and
+# CASTLEGATE_CHECK_MAP.
+services:
+  qgis-server:
+    build:
+      context: .
+      args:
+        BASE: qgis/qgis-server:ltr
+    ports:
+      - "8010:80"
+    volumes:
+      # The projects and their data. Not /io/plugins: a volume there would hide the plugin.
+      - ./data:/io/data
+    environment:
+      CASTLEGATE_ISSUER: https://login.microsoftonline.com/${CASTLEGATE_TENANT}/v2.0
+      CASTLEGATE_AUDIENCE: ${CASTLEGATE_AUDIENCE}
+      CASTLEGATE_SCOPE: ${CASTLEGATE_SCOPE}
+      CASTLEGATE_TENANT: ${CASTLEGATE_TENANT}
+      CASTLEGATE_CHECK_MAP: ${CASTLEGATE_CHECK_MAP}
+      # Warning keeps the plugin's audit lines, which it writes at Warning.
+      QGIS_SERVER_LOG_LEVEL: "1"
+    # The image runs one QGIS Server process; anything that ends it stops the container.
+    restart: unless-stopped

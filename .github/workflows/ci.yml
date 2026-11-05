@@ -47,6 +47,14 @@ jobs:
         with:
           node-version: 24.22.1
       - run: docker pull -q qgis/qgis-server:${{ matrix.image }}
+      - name: Check the Docker profile's compose file
+        working-directory: install/docker
+        run: docker compose config --quiet
+        env:
+          CASTLEGATE_TENANT: tenant
+          CASTLEGATE_AUDIENCE: audience
+          CASTLEGATE_SCOPE: scope
+          CASTLEGATE_CHECK_MAP: /io/data/project.qgs
       - run: node tests/server/run.mjs --image qgis/qgis-server:${{ matrix.image }} "$RUNNER_TEMP/castlegate"
       - name: Upload the server log
         if: ${{ always() }}
