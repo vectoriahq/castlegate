@@ -143,17 +143,37 @@ class Combining(unittest.TestCase):
     def test_no_seeing_row_means_no_features_seen(self):
         self.assertEqual(answer([row(can_see=False, can_add=True)]).see_filter, "FALSE")
 
-    def test_edit_filters_come_from_rows_granting_an_edit(self):
+    def test_edit_filters_come_from_rows_granting_that_edit(self):
         a = answer(
             [
                 row(can_change=True, edit_filter='"owner" = {{email}}'),
                 row(kind="group", who="g1", edit_filter=""),
             ]
         )
-        self.assertEqual(a.edit_filter, "\"owner\" = 'alice@example.org'")
+        self.assertEqual(a.edit_filter("change"), "\"owner\" = 'alice@example.org'")
+        for right in ("add", "move", "delete"):
+            self.assertEqual(a.edit_filter(right), "FALSE")
+
+    def test_a_row_granting_one_edit_does_not_widen_another(self):
+        # Review finding on #1: one filter OR-ed over every editing row let a
+        # delete-only row with no filter open changes to every feature.
+        a = answer(
+            [
+                row(can_change=True, edit_filter='"owner" = {{email}}'),
+                row(kind="group", who="g1", can_delete=True, edit_filter=""),
+            ]
+        )
+        self.assertEqual(a.edit_filter("change"), "\"owner\" = 'alice@example.org'")
+        self.assertEqual(a.edit_filter("move"), "FALSE")
+        self.assertEqual(a.edit_filter("delete"), "")
+        a = answer([row(can_add=True), row(kind="group", who="g1", can_change=True, edit_filter='"public"')])
+        self.assertEqual(a.edit_filter("add"), "")
+        self.assertEqual(a.edit_filter("change"), '"public"')
 
     def test_no_editing_row_means_no_features_edited(self):
-        self.assertEqual(answer([row()]).edit_filter, "FALSE")
+        a = answer([row()])
+        for right in ("add", "change", "move", "delete"):
+            self.assertEqual(a.edit_filter(right), "FALSE")
 
     def test_a_field_is_hidden_only_where_every_seeing_row_hides_it(self):
         a = answer([row(hidden_fields="secret,notes"), row(kind="group", who="g1", hidden_fields="secret")])
@@ -161,20 +181,32 @@ class Combining(unittest.TestCase):
         a = answer([row(hidden_fields="secret"), row(kind="group", who="g1")])
         self.assertEqual(a.hidden, frozenset())
 
-    def test_a_field_is_blocked_only_where_every_writing_row_blocks_it(self):
+    def test_a_field_is_blocked_only_where_every_row_granting_that_write_blocks_it(self):
         a = answer(
             [
                 row(can_change=True, hidden_fields="secret", readonly_fields="status"),
-                row(kind="group", who="g1", can_add=True, readonly_fields="status"),
+                row(kind="group", who="g1", can_change=True, readonly_fields="status,notes"),
+                row(kind="group", who="g1", can_add=True, readonly_fields=""),
                 row(kind="group", who="g1", can_see=True, readonly_fields=""),
             ]
         )
-        self.assertEqual(a.blocked, frozenset({"status"}))
+        self.assertEqual(a.blocked_on("change"), frozenset({"status"}))
+        self.assertEqual(a.blocked_on("add"), frozenset())
         self.assertEqual(a.hidden, frozenset())
+
+    def test_an_add_row_does_not_unblock_a_field_for_changes(self):
+        a = answer([row(can_change=True, readonly_fields="status"), row(kind="group", who="g1", can_add=True)])
+        self.assertEqual(a.blocked_on("change"), frozenset({"status"}))
+        self.assertEqual(a.blocked_on("add"), frozenset())
+
+    def test_no_blocked_list_for_a_write_not_granted(self):
+        a = answer([row(can_change=True)])
+        self.assertIsNone(a.blocked_on("add"))
+        self.assertIsNone(NOTHING.blocked_on("change"))
 
     def test_hidden_fields_are_blocked_on_writes(self):
         a = answer([row(can_change=True, hidden_fields="secret")])
-        self.assertEqual(a.blocked, frozenset({"secret"}))
+        self.assertEqual(a.blocked_on("change"), frozenset({"secret"}))
 
     def test_a_filter_needing_a_missing_email_grants_no_features(self):
         a = answer([row(kind="group", who="g1", see_filter='"owner" = {{email}}')], person=NO_EMAIL)

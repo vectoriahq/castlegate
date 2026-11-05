@@ -10,6 +10,12 @@ from core.tokens import Person, TokenError, verify
 from .helpers import SETTINGS, StaticKeys, b64url, claims, key, token
 
 
+def replaced(name, literal):
+    """The claims as JSON, with one claim's value written as the given literal."""
+    c = claims()
+    return json.dumps(c).replace('"%s": %d' % (name, c[name]), '"%s": %s' % (name, literal))
+
+
 def check(tok, settings=SETTINGS, keys=None, now=time.time):
     return verify("Bearer " + tok, settings, keys or StaticKeys(key()), now=now)
 
@@ -121,9 +127,18 @@ class Refused(unittest.TestCase):
         self.refused(token(claims(nbf="0")), "not valid yet")
 
     def test_infinity_and_nan_are_not_numbers(self):
-        payload = json.dumps(claims()).replace('"exp": %d' % claims()["exp"], '"exp": Infinity')
+        payload = replaced("exp", "Infinity")
         self.assertIn("Infinity", payload)
         self.refused(token(raw_payload=payload.encode()), "malformed")
+
+    def test_a_number_too_large_for_a_float_is_not_a_time(self):
+        # Review finding on #1: 1e999 parses to infinity, so the token never expired.
+        for literal in ("1e999", "-1e999"):
+            payload = replaced("exp", literal)
+            self.assertIn(literal, payload)
+            self.refused(token(raw_payload=payload.encode()), "expired")
+        payload = replaced("nbf", "-1e999")
+        self.refused(token(raw_payload=payload.encode()), "not valid yet")
 
     def test_scope_missing(self):
         self.refused(token(claims(scp="other")), "scope")

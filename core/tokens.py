@@ -68,7 +68,8 @@ def _json(part):
 
 
 def _number(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    # abs(value) < inf is False for infinity and NaN, which a literal such as 1e999 parses to.
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and abs(value) < float("inf")
 
 
 def verify(authorization, settings, keyset, now=time.time):

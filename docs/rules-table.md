@@ -24,8 +24,9 @@ In a filter, `{{email}}` and `{{oid}}` stand for the signed-in person's email an
 A person may do anything any of their rows allows. There are no rows that take a right away.
 
 - **Rights** add up across rows.
-- **Filters** from several rows combine with OR, and a row with an empty filter lets the person see, or edit, every feature.
-- **A field is hidden** only where every row that lets the person see the layer hides it, and **read-only** only where every row that lets them add or change features makes it read-only or hidden.
+- **Each right is worked out on its own,** from the rows that grant that right.
+- **Filters** from those rows combine with OR, and a row with an empty filter opens that right to every feature. A row's `edit_filter` applies to each edit it grants, separately: a row allowing deletes with no filter lets the person delete any feature, but changes nothing about which features they may change.
+- **A field is hidden** only where every row that lets the person see the layer hides it. It is **read-only when adding** only where every row granting `can_add` makes it read-only or hidden, and the same for changing with `can_change`.
 - **A row counts only for what it grants.** A row that lets someone delete but not see does not widen which features or fields they see.
 
 ## Rows that cannot be read

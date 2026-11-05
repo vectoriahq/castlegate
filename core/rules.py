@@ -147,21 +147,35 @@ class Answer:
     """What one person may do on one layer."""
 
     rights: frozenset
-    # A QGIS expression limiting the features they see, or "" for every feature.
+    # A QGIS expression limiting the features they see, "" for every feature, or "FALSE" when not granted.
     see_filter: str
-    # A QGIS expression limiting the features they may add, change, move or delete, or "" for every feature.
-    edit_filter: str
+    # For each of add, change, move and delete: a QGIS expression limiting the
+    # features it applies to, "" for every feature, or "FALSE" when not granted.
+    edit_filters: dict
     # Fields whose values they may not see.
     hidden: frozenset
-    # Fields they may not set on an add or change: hidden ones and read-only ones.
-    blocked: frozenset
+    # For add and change, where granted: the fields they may not set, hidden ones and read-only ones.
+    blocked: dict
 
     @property
     def nothing(self):
         return not self.rights
 
+    def edit_filter(self, right):
+        return self.edit_filters.get(right, "FALSE")
 
-NOTHING = Answer(rights=frozenset(), see_filter="FALSE", edit_filter="FALSE", hidden=frozenset(), blocked=frozenset())
+    def blocked_on(self, right):
+        """The fields that may not be set on an add or a change, or None when that right is not granted."""
+        return self.blocked.get(right)
+
+
+NOTHING = Answer(
+    rights=frozenset(),
+    see_filter="FALSE",
+    edit_filters={right: "FALSE" for right in sorted(EDIT_RIGHTS)},
+    hidden=frozenset(),
+    blocked={},
+)
 
 
 def substitute(expression, person, quote):
@@ -197,25 +211,37 @@ def _all_of(sets):
 def combine(rows, person, quote):
     """The Answer for one person from the rows naming them on one layer; the most permissive wins.
 
-    A row widens only what it grants. Its see filter and hidden fields count only
-    if it lets the person see; its edit filter only if it grants an edit; its
-    read-only fields only if it lets the person add or change. So a row granting
-    one thing cannot loosen the conditions another row put on something else.
+    A row widens only what it grants, and each right is combined over the rows
+    granting that right alone. A row's see filter and hidden fields count only
+    for seeing; its edit filter only for the edits it grants, each separately;
+    its read-only fields only for an add if it grants add, and for a change if
+    it grants change. So a row granting one thing cannot loosen the conditions
+    another row put on something else.
     """
     if not rows:
         return NOTHING
     rights = frozenset().union(*(row.rights for row in rows))
     if not rights:
         return NOTHING
-    seeing = [row for row in rows if "see" in row.rights]
-    editing = [row for row in rows if row.rights & EDIT_RIGHTS]
-    writing = [row for row in rows if row.rights & WRITE_RIGHTS]
+
+    def granting(right):
+        return [row for row in rows if right in row.rights]
+
+    def filter_for(right, column):
+        matching = granting(right)
+        if not matching:
+            return "FALSE"
+        return _any_of([substitute(getattr(row, column), person, quote) for row in matching])
+
     return Answer(
         rights=rights,
-        see_filter=_any_of([substitute(row.see_filter, person, quote) for row in seeing]) if seeing else "FALSE",
-        edit_filter=_any_of([substitute(row.edit_filter, person, quote) for row in editing]) if editing else "FALSE",
-        hidden=_all_of(row.hidden for row in seeing),
-        blocked=_all_of(row.hidden | row.readonly for row in writing),
+        see_filter=filter_for("see", "see_filter"),
+        edit_filters={right: filter_for(right, "edit_filter") for right in sorted(EDIT_RIGHTS)},
+        hidden=_all_of(row.hidden for row in granting("see")),
+        blocked={
+            right: _all_of(row.hidden | row.readonly for row in granting(right))
+            for right in sorted(WRITE_RIGHTS & rights)
+        },
     )
 
 
