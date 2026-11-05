@@ -30,6 +30,6 @@ The design and its decisions are in Groundwork's plan, `docs/plans/qgis-server-a
   node tests/server/run.mjs --image qgis/qgis-server:ltr
   ```
 
-  With `CASTLEGATE_BACKEND=mssql` the layers and rules tables are in SQL Server instead of a GeoPackage, through Microsoft's ODBC Driver 18 and SQL Server 2022 Developer, whose licence terms running them accepts ([ODBC Driver 18](https://aka.ms/odbc18eula), [SQL Server 2022 Developer](https://go.microsoft.com/fwlink/?linkid=857698)). CI runs that weekly and on request (`.github/workflows/sql-server.yml`).
+  With `CASTLEGATE_BACKEND=mssql` the layers and rules tables are in SQL Server instead of a GeoPackage, through Microsoft's ODBC Driver 18 and SQL Server 2022 Developer, whose licence terms running them accepts ([ODBC Driver 18](https://aka.ms/odbc18eula), [SQL Server 2022 Developer](https://go.microsoft.com/fwlink/?linkid=857698)). CI runs that only when someone starts it (`.github/workflows/sql-server.yml`).
 
 - `spike/`: the package 1 prototype and the harness that runs its checks against the Docker QGIS Server.
