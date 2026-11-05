@@ -1,0 +1,524 @@
+#!/usr/bin/env node
+// Castlegate Server's tests against a real QGIS Server in Docker.
+//
+//   node tests/server/run.mjs [--image qgis/qgis-server:ltr] [work folder]
+//   CASTLEGATE_BACKEND=mssql node tests/server/run.mjs [work folder]
+//
+// It builds the plugin (scripts/build.py) and the test projects, starts a stub
+// OpenID Connect issuer over HTTPS and QGIS Server with the plugin, runs each
+// check against http://localhost:8020 and prints one line per check. It exits 1
+// if any check fails.
+//
+// With CASTLEGATE_BACKEND=mssql the layers and rules tables live in SQL Server:
+// it builds the image in mssql/ from the chosen image, adding Microsoft's ODBC
+// driver, and starts Microsoft's SQL Server 2022 Developer container. Both accept
+// Microsoft's licence terms.
+
+import { spawnSync } from "child_process";
+import { cpSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { createSign, generateKeyPairSync as genKeys, randomBytes } from "crypto";
+import { dirname, join, resolve } from "path";
+import { fileURLToPath } from "url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = resolve(here, "..", "..");
+const args = process.argv.slice(2);
+const imageArg = args.indexOf("--image");
+const BASE_IMAGE = imageArg >= 0 ? args.splice(imageArg, 2)[1] : "qgis/qgis-server:ltr";
+const work = resolve(args[0] ?? join(root, ".work", "server"));
+const MSSQL = process.env.CASTLEGATE_BACKEND === "mssql";
+const IMAGE = MSSQL ? "castlegate-qgis-mssql" : BASE_IMAGE;
+const MSSQL_IMAGE = "mcr.microsoft.com/mssql/server:2022-latest";
+// A test password for this run's throwaway container, meeting SQL Server's complexity rule.
+const SA_PASSWORD = `Cg_${randomBytes(12).toString("hex")}_A1`;
+const MSSQL_URI = `dbname='castlegate' service='DSN=castlegate' host='castlegate-mssql' user='sa' password='${SA_PASSWORD}'`;
+const NET = "castlegate-tests";
+const PORT = 8020;
+const BASE = `http://localhost:${PORT}/`;
+const OWS = "ows/";
+const TENANT = "9a9a9a9a-0000-4000-8000-000000000001";
+const ISSUER_HOST = "castlegate-issuer";
+const ISSUER = `https://${ISSUER_HOST}:8443/${TENANT}/v2.0`;
+const AUDIENCE = "api://castlegate-tests";
+const SCOPE = "access";
+const G = "11111111-2222-3333-4444-555555555555";
+const MAP = "/io/data/castlegate.qgs";
+const MAP_B = "/io/data/castlegate-b.qgs";
+const MAP_NONE = "/io/data/castlegate-norules.qgs";
+const MAP_MISSING = "/io/data/castlegate-missing.qgs";
+
+const people = {
+  alice: { oid: "aaaaaaaa-0000-4000-8000-00000000000a", preferred_username: "alice@example.org" },
+  bob: { oid: "bbbbbbbb-0000-4000-8000-00000000000b", preferred_username: "bob@example.org" },
+  carol: { oid: "cccccccc-0000-4000-8000-00000000000c", preferred_username: "carol@example.org", groups: [G] },
+  erin: { oid: "eeeeeeee-0000-4000-8000-00000000000e", preferred_username: "erin@example.org" },
+  frank: { oid: "ffffffff-0000-4000-8000-00000000000f", preferred_username: "frank@example.org" },
+};
+
+const all = { can_see: true, can_add: true, can_change: true, can_move: true, can_delete: true };
+const RULES = {
+  a: [
+    { kind: "person", who: "alice@example.org", layer: "assets", ...all, edit_filter: '"owner" = {{email}}' },
+    { kind: "person", who: "alice@example.org", layer: "restricted", can_see: true },
+    { kind: "person", who: "alice@example.org", layer: "big", can_see: true, see_filter: '"owner" = {{email}}' },
+    { kind: "person", who: "alice@example.org", layer: "site notes", can_see: true, can_change: true },
+    // A row naming the rules layer itself: the plugin must still never serve it.
+    { kind: "person", who: "alice@example.org", layer: "castlegate_rules", ...all },
+    {
+      kind: "person", who: "bob@example.org", layer: "assets", can_see: true, can_change: true,
+      see_filter: '"owner" = {{email}}', edit_filter: '"owner" = {{email}}', hidden_fields: "secret", readonly_fields: "status",
+    },
+    { kind: "person", who: "bob@example.org", layer: "site notes", can_see: true },
+    { kind: "group", who: G, layer: "assets", can_see: true },
+    // A group row granting deletes with no filter must not widen carol's changes.
+    { kind: "group", who: G, layer: "assets", can_delete: true },
+    { kind: "person", who: "carol@example.org", layer: "assets", can_change: true, edit_filter: '"owner" = {{email}}' },
+    { kind: "person", who: people.erin.oid, layer: "assets", can_see: true, can_move: true },
+    { kind: "role", who: "alice@example.org", layer: "big", ...all },
+    { kind: "person", who: "alice@example.org", layer: "big", ...all, see_filter: '"owner" = (' },
+  ],
+  b: [
+    { kind: "person", who: "bob@example.org", layer: "restricted", can_see: true },
+    { kind: "person", who: "bob@example.org", layer: "assets", can_see: true },
+  ],
+};
+
+const results = [];
+function record(id, ok, detail) {
+  results.push({ id, ok, detail });
+  console.log(`${ok === null ? "INFO" : ok ? "PASS" : "FAIL"}  ${id}  ${detail}`);
+}
+
+function run(cmd, cmdArgs, { allowFail = false, env } = {}) {
+  const r = spawnSync(cmd, cmdArgs, { encoding: "utf-8", env: { ...process.env, ...env } });
+  if (r.error) throw r.error;
+  if (r.status !== 0 && !allowFail) throw new Error(`${cmd} ${cmdArgs.join(" ")}\n${r.stderr}${r.stdout}`);
+  return r;
+}
+function docker(dockerArgs, { allowFail = false, env } = {}) {
+  if (env) dockerArgs = [dockerArgs[0], ...Object.keys(env).flatMap((k) => ["-e", k]), ...dockerArgs.slice(1)];
+  return run("docker", dockerArgs, { allowFail, env });
+}
+
+// ---- keys, tokens and the stub issuer -------------------------------------------------
+
+const signing = genKeys("rsa", { modulusLength: 2048 });
+const stranger = genKeys("rsa", { modulusLength: 2048 });
+const KID = "test-key-1";
+const b64 = (o) => Buffer.from(typeof o === "string" ? o : JSON.stringify(o)).toString("base64url");
+
+function token(claims = {}, { key = signing.privateKey, header = {} } = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  const body = { iss: ISSUER, aud: AUDIENCE, tid: TENANT, scp: SCOPE, iat: now, nbf: now - 10, exp: now + 3600, ver: "2.0", ...claims };
+  for (const k of Object.keys(body)) if (body[k] === undefined) delete body[k];
+  const input = `${b64({ alg: "RS256", typ: "JWT", kid: KID, ...header })}.${b64(body)}`;
+  const signer = createSign("RSA-SHA256");
+  signer.update(input);
+  return `${input}.${signer.sign(key).toString("base64url")}`;
+}
+const tok = (who, extra) => token({ ...people[who], ...extra });
+
+const dirs = {
+  build: join(work, "build"),
+  pristine: join(work, "pristine"),
+  live: join(work, "live"),
+  issuer: join(work, "issuer"),
+  tls: join(work, "tls"),
+};
+
+function writeIssuer() {
+  const jwk = signing.publicKey.export({ format: "jwk" });
+  const wellKnown = join(dirs.issuer, TENANT, "v2.0", ".well-known");
+  mkdirSync(wellKnown, { recursive: true });
+  writeFileSync(join(wellKnown, "openid-configuration"), JSON.stringify({ issuer: ISSUER, jwks_uri: `https://${ISSUER_HOST}:8443/keys.json` }));
+  writeFileSync(join(dirs.issuer, "keys.json"), JSON.stringify({ keys: [{ ...jwk, kid: KID, use: "sig", alg: "RS256" }] }));
+  // The plugin fetches over HTTPS only, so the stub issuer gets a certificate QGIS Server is told to trust.
+  mkdirSync(dirs.tls, { recursive: true });
+  // Made with the image's own openssl, so the host needs none.
+  docker([
+    "run", "--rm", "-v", `${dirs.tls}:/tls`, "--entrypoint", "openssl", IMAGE,
+    "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-keyout", "/tls/key.pem", "-out", "/tls/cert.pem",
+    "-subj", `/CN=${ISSUER_HOST}`, "-addext", `subjectAltName=DNS:${ISSUER_HOST}`,
+  ], { env: { MSYS_NO_PATHCONV: "1" } });
+  docker(["run", "--rm", "-v", `${dirs.tls}:/tls`, "--entrypoint", "chmod", IMAGE, "a+r", "/tls/key.pem", "/tls/cert.pem"]);
+  writeFileSync(
+    join(dirs.tls, "serve.py"),
+    [
+      "import functools, http.server, ssl",
+      "handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory='/srv')",
+      "server = http.server.ThreadingHTTPServer(('0.0.0.0', 8443), handler)",
+      "context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)",
+      "context.load_cert_chain('/tls/cert.pem', '/tls/key.pem')",
+      "server.socket = context.wrap_socket(server.socket, server_side=True)",
+      "server.serve_forever()",
+    ].join("\n")
+  );
+}
+
+// ---- SQL Server -------------------------------------------------------------------------
+
+function sql(query, { db = "castlegate", allowFail = false } = {}) {
+  return docker(
+    ["exec", "castlegate-mssql", "sh", "-c", `SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" /opt/mssql-tools18/bin/sqlcmd -C -b -I -S localhost -U sa -d ${db} -h -1 -W -Q "$Q"`],
+    { allowFail, env: { Q: query } }
+  );
+}
+
+const DATA_TABLES = ["assets", "restricted", "big", "site_notes"];
+const RULES_TABLES = ["castlegate_rules", "castlegate_rules_b"];
+
+async function startSqlServer() {
+  docker(["build", "-q", "--build-arg", `BASE=${BASE_IMAGE}`, "-t", IMAGE, join(here, "mssql")]);
+  docker(["run", "-d", "--name", "castlegate-mssql", "--network", NET, "-e", "ACCEPT_EULA=Y", "-e", "MSSQL_PID=Developer", "-e", `MSSQL_SA_PASSWORD=${SA_PASSWORD}`, MSSQL_IMAGE]);
+  for (let i = 0; i < 90 && sql("SELECT 1", { db: "master", allowFail: true }).status !== 0; i++) await new Promise((r) => setTimeout(r, 1000));
+  sql("CREATE DATABASE castlegate", { db: "master" });
+  const data = "fid INT IDENTITY(1,1) PRIMARY KEY, name NVARCHAR(100), owner NVARCHAR(100), status NVARCHAR(20), secret NVARCHAR(100), geom geometry";
+  for (const t of DATA_TABLES) sql(`CREATE TABLE dbo.${t} (${data}); CREATE SPATIAL INDEX ${t}_geom ON dbo.${t}(geom) WITH (BOUNDING_BOX = (144, -39, 146, -37));`);
+  const text = ["kind", "who", "layer", "can_see", "can_add", "can_change", "can_move", "can_delete", "see_filter", "edit_filter", "hidden_fields", "readonly_fields"]
+    .map((c) => `${c} NVARCHAR(400)`)
+    .join(", ");
+  for (const t of RULES_TABLES) sql(`CREATE TABLE dbo.${t} (fid INT IDENTITY(1,1) PRIMARY KEY, ${text})`);
+  record("mssql-version", null, sql("SELECT @@VERSION", { db: "master" }).stdout.trim().split("\n")[0]);
+}
+
+function resetSqlServer() {
+  sql("DELETE FROM dbo.assets; SET IDENTITY_INSERT dbo.assets ON; INSERT INTO dbo.assets (fid, name, owner, status, secret, geom) SELECT fid, name, owner, status, secret, geom FROM dbo.assets_pristine; SET IDENTITY_INSERT dbo.assets OFF; DBCC CHECKIDENT ('dbo.assets', RESEED) WITH NO_INFOMSGS;");
+}
+
+// ---- containers ------------------------------------------------------------------------
+
+async function prepare() {
+  rmSync(work, { recursive: true, force: true });
+  mkdirSync(dirs.pristine, { recursive: true });
+  run("python3", [join(root, "scripts", "build.py"), dirs.build], { allowFail: false });
+  docker(["rm", "-f", "castlegate-issuer", "castlegate-server", "castlegate-mssql"], { allowFail: true });
+  docker(["network", "rm", NET], { allowFail: true });
+  docker(["network", "create", NET]);
+  if (MSSQL) await startSqlServer();
+  docker([
+    "run", "--rm", "--network", NET, "-e", "QT_QPA_PLATFORM=offscreen",
+    // QGIS 4's image keeps its Python library outside the default path.
+    "-e", "PYTHONPATH=/usr/share/qgis/python", "-e", `CASTLEGATE_TEST_RULES=${JSON.stringify(RULES)}`,
+    ...(MSSQL ? ["-e", `CASTLEGATE_MSSQL=${MSSQL_URI}`] : []),
+    "-v", `${dirs.pristine}:/io/data`, "-v", `${here}:/work:ro`,
+    "--entrypoint", "python3", IMAGE, "/work/build_project.py",
+  ]);
+  if (MSSQL) sql("SELECT * INTO dbo.assets_pristine FROM dbo.assets");
+  writeIssuer();
+  docker([
+    "run", "-d", "--name", "castlegate-issuer", "--network", NET, "-v", `${dirs.issuer}:/srv:ro`, "-v", `${dirs.tls}:/tls:ro`,
+    "--entrypoint", "python3", IMAGE, "/tls/serve.py",
+  ]);
+}
+
+async function startServer({ plugin = true, env = {} } = {}) {
+  docker(["rm", "-f", "castlegate-server"], { allowFail: true });
+  rmSync(dirs.live, { recursive: true, force: true });
+  cpSync(dirs.pristine, dirs.live, { recursive: true });
+  if (MSSQL) resetSqlServer();
+  const vars = {
+    QGIS_SERVER_LOG_LEVEL: "0",
+    CASTLEGATE_ISSUER: ISSUER,
+    CASTLEGATE_AUDIENCE: AUDIENCE,
+    CASTLEGATE_SCOPE: SCOPE,
+    CASTLEGATE_TENANT: TENANT,
+    SSL_CERT_FILE: "/tls/cert.pem",
+    ...env,
+  };
+  const dockerArgs = ["run", "-d", "--name", "castlegate-server", "--network", NET, "-p", `${PORT}:80`, "-v", `${dirs.live}:/io/data`, "-v", `${dirs.tls}:/tls:ro`];
+  if (plugin) dockerArgs.push("-v", `${dirs.build}:/io/plugins:ro`);
+  for (const [k, v] of Object.entries(vars)) dockerArgs.push("-e", `${k}=${v}`);
+  dockerArgs.push(IMAGE);
+  docker(dockerArgs);
+  // Files on a Windows bind mount show as root's with mode 644; QGIS Server runs as www-data.
+  docker(["exec", "castlegate-server", "sh", "-c", "chmod a+rw /io/data /io/data/*"]);
+  for (let i = 0; i < 90; i++) {
+    try {
+      const r = await fetch(`${BASE}${OWS}?SERVICE=WMS&REQUEST=GetCapabilities&MAP=${MAP}`);
+      await r.arrayBuffer();
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  throw new Error("QGIS Server did not answer");
+}
+
+const logs = () => {
+  const r = docker(["logs", "castlegate-server"], { allowFail: true });
+  return (r.stdout ?? "") + (r.stderr ?? "");
+};
+const alive = () => docker(["inspect", "-f", "{{.State.Running}}", "castlegate-server"], { allowFail: true }).stdout.trim() === "true";
+
+// ---- requests --------------------------------------------------------------------------
+
+async function req(params, { who, auth, body, map = MAP, path = OWS, contentType = "text/xml" } = {}) {
+  const url = new URL(BASE + path);
+  if (map) url.searchParams.set("MAP", map);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const headers = {};
+  const t = auth ?? (who ? tok(who) : undefined);
+  if (t) headers.Authorization = `Bearer ${t}`;
+  if (body) headers["Content-Type"] = contentType;
+  const r = await fetch(url, { method: body ? "POST" : "GET", headers, body });
+  const buf = Buffer.from(await r.arrayBuffer());
+  return { status: r.status, headers: r.headers, text: buf.toString("utf-8"), buf };
+}
+
+const gps = (who, opts) => req({ SERVICE: "WMS", VERSION: "1.3.0", REQUEST: "GetProjectSettings" }, { who, ...opts });
+const wfsCaps = (who, opts) => req({ SERVICE: "WFS", VERSION: "1.1.0", REQUEST: "GetCapabilities" }, { who, ...opts });
+async function getFeatures(who, layer, extra = {}, opts = {}) {
+  const r = await req({ SERVICE: "WFS", VERSION: "1.1.0", REQUEST: "GetFeature", TYPENAME: layer, OUTPUTFORMAT: "application/vnd.geo+json", ...extra }, { who, ...opts });
+  try {
+    return { ...r, json: JSON.parse(r.text) };
+  } catch {
+    return { ...r, json: null };
+  }
+}
+const status = (who, opts) => req({ SERVICE: "CASTLEGATE", REQUEST: "Status" }, { who, ...opts });
+const names = (xml) => [...xml.matchAll(/<Name>([^<]+)<\/Name>/g)].map((m) => m[1]);
+const short = (s) => {
+  const m = s.match(/<(?:\w+:)?(?:Message|ServiceException[^>]*|ServerException)>([^<]*)</);
+  return (m ? `[${/SUCCESS/.test(s) ? "SUCCESS" : /FAILED/.test(s) ? "FAILED" : "exception"}] ${m[1]}` : s).replace(/\s+/g, " ").slice(0, 220);
+};
+
+const NS = 'xmlns:wfs="http://www.opengis.net/wfs" xmlns:ogc="http://www.opengis.net/ogc" xmlns:gml="http://www.opengis.net/gml" xmlns:qgs="http://www.qgis.org/gml"';
+const tx = (inner) => `<?xml version="1.0"?><wfs:Transaction service="WFS" version="1.0.0" ${NS}>${inner}</wfs:Transaction>`;
+const POINT = (x, y) => `<gml:Point srsName="EPSG:4326"><gml:coordinates>${x},${y}</gml:coordinates></gml:Point>`;
+const update = (layer, fid, props) =>
+  `<wfs:Update typeName="qgs:${layer}">${Object.entries(props)
+    .map(([k, v]) => `<wfs:Property><wfs:Name>${k}</wfs:Name><wfs:Value>${v}</wfs:Value></wfs:Property>`)
+    .join("")}<ogc:Filter><ogc:FeatureId fid="${layer}.${fid}"/></ogc:Filter></wfs:Update>`;
+const insert = (layer, props) =>
+  `<wfs:Insert><qgs:${layer}><qgs:geometry>${POINT(144.99, -37.81)}</qgs:geometry>${Object.entries(props)
+    .map(([k, v]) => `<qgs:${k}>${v}</qgs:${k}>`)
+    .join("")}</qgs:${layer}></wfs:Insert>`;
+const del = (layer, fid) => `<wfs:Delete typeName="qgs:${layer}"><ogc:Filter><ogc:FeatureId fid="${layer}.${fid}"/></ogc:Filter></wfs:Delete>`;
+const post = (who, inner, opts) => req({ SERVICE: "WFS", VERSION: "1.0.0", REQUEST: "Transaction" }, { who, body: tx(inner), ...opts });
+const succeeded = (r) => r.status === 200 && /SUCCESS/.test(r.text) && !/FAILED|ServiceException/.test(r.text);
+const feature = async (layer, fid) => (await getFeatures("alice", layer, { FEATUREID: `${layer}.${fid}` })).json?.features?.[0];
+const coords = (f) => f?.geometry?.coordinates?.map((c) => c.toFixed(3)).join(",");
+
+// ---- checks -----------------------------------------------------------------------------
+
+async function checkTokens() {
+  const none = await gps();
+  record("no-token", none.status === 401 && !/assets/.test(none.text), `status ${none.status}: ${short(none.text)}`);
+  record("no-token-www-authenticate", none.headers.get("www-authenticate") === "Bearer", `WWW-Authenticate: ${none.headers.get("www-authenticate")}`);
+  const now = Math.floor(Date.now() / 1000);
+  const bad = {
+    "bad-signature": token(people.alice, { key: stranger.privateKey }),
+    "alg-none": `${b64({ alg: "none", typ: "JWT", kid: KID })}.${b64({ ...people.alice, iss: ISSUER, aud: AUDIENCE, tid: TENANT, scp: SCOPE, exp: now + 600 })}.`,
+    "unknown-kid": token(people.alice, { header: { kid: "other" } }),
+    expired: tok("alice", { exp: now - 3600 }),
+    "not-yet-valid": tok("alice", { nbf: now + 3600 }),
+    "wrong-audience": tok("alice", { aud: "api://someone-else" }),
+    "wrong-issuer": tok("alice", { iss: "https://login.microsoftonline.com/other/v2.0" }),
+    "wrong-tenant": tok("alice", { tid: "00000000-0000-0000-0000-000000000000" }),
+    "no-scope": tok("alice", { scp: "other" }),
+    "groups-overage": tok("carol", { groups: undefined, _claim_names: { groups: "src1" } }),
+  };
+  for (const [name, t] of Object.entries(bad)) {
+    const r = await gps(undefined, { auth: t });
+    record(`token-${name}`, r.status === 401 && !/<Name>assets<\/Name>/.test(r.text), `status ${r.status}: ${short(r.text)}`);
+  }
+  const good = await gps("alice");
+  record("token-good", good.status === 200 && /<Name>assets<\/Name>/.test(good.text), `status ${good.status}`);
+}
+
+async function checkStatus() {
+  const s0 = await status(undefined);
+  const body0 = JSON.parse(s0.text || "{}");
+  record("status-no-token", s0.status === 401 && s0.headers.get("www-authenticate") === "Bearer" && body0.signedIn === false, `status ${s0.status}, WWW-Authenticate ${s0.headers.get("www-authenticate")}: ${s0.text.slice(0, 160)}`);
+  const s1 = await status("carol");
+  const body = JSON.parse(s1.text || "{}");
+  record(
+    "status-signed-in",
+    s1.status === 200 && body.email === "carol@example.org" && body.groups?.includes(G) && body.rules?.loaded === true && body.rules?.rows === 11 && body.rules?.problems?.length === 2,
+    `status ${s1.status}: id ${body.id}, rules ${JSON.stringify(body.rules)}`
+  );
+  const s2 = await status("alice", { map: MAP_NONE });
+  const body2 = JSON.parse(s2.text || "{}");
+  record("status-no-rules", body2.rules?.loaded === false && /castlegate_rules_layer/.test(body2.rules?.error ?? ""), `a project with no rules variable: ${JSON.stringify(body2.rules)}`);
+  const unknown = await req({ SERVICE: "NOSUCH", REQUEST: "Status" }, { who: "alice" });
+  record("unknown-service-refused", unknown.status === 403, `status ${unknown.status}: ${short(unknown.text)}`);
+}
+
+async function checkLayers() {
+  const [bob, alice] = [names((await gps("bob")).text), names((await gps("alice")).text)];
+  record("hidden-layer-getprojectsettings", !bob.includes("restricted") && alice.includes("restricted"), `bob sees [${bob.join(", ")}], alice sees [${alice.join(", ")}]`);
+  const [bobCaps, aliceCaps] = [(await wfsCaps("bob")).text, (await wfsCaps("alice")).text];
+  record("hidden-layer-wfs-capabilities", !/<Name>restricted<\/Name>/.test(bobCaps) && /<Name>restricted<\/Name>/.test(aliceCaps), `restricted for bob: ${/<Name>restricted<\/Name>/.test(bobCaps)}, for alice: ${/<Name>restricted<\/Name>/.test(aliceCaps)}`);
+  record("rules-layer-not-in-capabilities", !alice.includes("castlegate_rules") && !/castlegate_rules/.test(aliceCaps), `alice, who has a row naming it: GetProjectSettings ${alice.includes("castlegate_rules") ? "lists" : "does not list"} it, WFS capabilities ${/castlegate_rules/.test(aliceCaps) ? "list" : "do not list"} it`);
+  const rulesRead = await getFeatures("alice", "castlegate_rules");
+  record("rules-layer-not-served", !rulesRead.json?.features?.length && !/bob@example.org/.test(rulesRead.text), `GetFeature on the rules layer as alice: status ${rulesRead.status}, ${rulesRead.json?.features?.length ?? "no"} features: ${short(rulesRead.text)}`);
+  const frank = names((await gps("frank")).text);
+  record("no-rows-no-layers", !["assets", "restricted", "big", "site notes"].some((n) => frank.includes(n)), `frank, with no rows, sees [${frank.join(", ")}]`);
+}
+
+async function checkFilters() {
+  const bob = await getFeatures("bob", "assets");
+  const alice = await getFeatures("alice", "assets");
+  const owners = [...new Set((bob.json?.features ?? []).map((f) => f.properties.owner))];
+  record("filter-wfs-getfeature", bob.json?.features?.length === 4 && owners.join() === "bob@example.org" && alice.json?.features?.length === 8, `bob gets ${bob.json?.features?.length} (owners ${owners}), alice gets ${alice.json?.features?.length}`);
+  const fields = Object.keys(bob.json?.features?.[0]?.properties ?? {});
+  record("hidden-field-values-getfeature", fields.length > 0 && !fields.includes("secret"), `bob's fields: ${fields.join(", ")}`);
+  const big = await getFeatures("alice", "big");
+  record("filter-placeholder", big.json?.features?.length === 1 && big.json.features[0].properties.owner === "alice@example.org", `alice's big features with "owner" = {{email}}: ${big.json?.features?.length}`);
+
+  // WMS GetMap: asset 0 (alice's) is at 144.96,-37.81.
+  const map = (who, bbox) =>
+    req({ SERVICE: "WMS", VERSION: "1.3.0", REQUEST: "GetMap", LAYERS: "assets", STYLES: "", CRS: "EPSG:4326", BBOX: bbox, WIDTH: "64", HEIGHT: "64", FORMAT: "image/png", TRANSPARENT: "true" }, { who });
+  const onAlice = "-37.8105,144.9595,-37.8095,144.9605";
+  const empty = "-37.0005,144.0,-36.9995,144.001";
+  const [bobOn, aliceOn, bobEmpty] = [await map("bob", onAlice), await map("alice", onAlice), await map("bob", empty)];
+  record("filter-wms-getmap", bobOn.status === 200 && bobOn.buf.equals(bobEmpty.buf) && !aliceOn.buf.equals(bobEmpty.buf), `around alice's asset, bob's image ${bobOn.buf.equals(bobEmpty.buf) ? "equals" : "differs from"} an empty one; alice's ${aliceOn.buf.equals(bobEmpty.buf) ? "equals" : "differs from"} it`);
+  const gfi = (who) =>
+    req({ SERVICE: "WMS", VERSION: "1.3.0", REQUEST: "GetFeatureInfo", LAYERS: "assets", QUERY_LAYERS: "assets", STYLES: "", CRS: "EPSG:4326", BBOX: onAlice, WIDTH: "64", HEIGHT: "64", I: "32", J: "32", INFO_FORMAT: "application/json", FEATURE_COUNT: "5", FI_POINT_TOLERANCE: "16" }, { who });
+  const [nb, na] = [JSON.parse((await gfi("bob")).text).features?.length, JSON.parse((await gfi("alice")).text).features?.length];
+  record("filter-wms-getfeatureinfo", nb === 0 && na >= 1, `bob gets ${nb} features at alice's asset, alice gets ${na}`);
+}
+
+async function checkSaves() {
+  // Rights QGIS Server itself checks.
+  const ins = await post("bob", insert("assets", { name: "new", owner: "bob@example.org" }));
+  record("refused-insert", !succeeded(ins), `bob inserts: status ${ins.status}: ${short(ins.text)}`);
+  const dl = await post("bob", del("assets", 2));
+  record("refused-delete", !succeeded(dl) && (await feature("assets", 2)), `bob deletes: status ${dl.status}: ${short(dl.text)}`);
+  const up = await post("frank", update("assets", 2, { name: "frank" }));
+  record("refused-update", !succeeded(up) && (await feature("assets", 2)).properties.name === "asset 1", `frank updates: status ${up.status}: ${short(up.text)}`);
+
+  // The edit filter, checked by allowToEdit.
+  const other = await post("alice", update("assets", 2, { name: "alice edits bob's" }));
+  record("edit-filter-other-feature", !succeeded(other) && (await feature("assets", 2)).properties.name === "asset 1", `alice updates bob's: status ${other.status}: ${short(other.text)}`);
+  const own = await post("alice", update("assets", 1, { name: "alice renamed" }));
+  record("edit-filter-own-feature", succeeded(own) && (await feature("assets", 1)).properties.name === "alice renamed", `alice updates her own: ${short(own.text)}`);
+  const away = await post("alice", update("assets", 3, { owner: "bob@example.org" }));
+  record("edit-filter-moves-out-of-scope", !succeeded(away) && (await feature("assets", 3)).properties.owner === "alice@example.org", `alice gives hers to bob: status ${away.status}: ${short(away.text)}`);
+
+  // A group row granting deletes with no filter does not widen carol's changes.
+  const carol = await post("carol", update("assets", 2, { name: "carol was here" }));
+  record("per-right-filter", !succeeded(carol) && (await feature("assets", 2)).properties.name === "asset 1", `carol, who may delete any feature but change only her own, changes bob's: status ${carol.status}: ${short(carol.text)}`);
+
+  // Fields the plugin checks itself.
+  const hidden = await post("bob", update("assets", 2, { secret: "bob wrote this" }));
+  record("field-hidden-refused", !succeeded(hidden) && (await feature("assets", 2)).properties.secret === "secret 1", `bob sets hidden "secret": status ${hidden.status}: ${short(hidden.text)}`);
+  record("refusal-response", null, `what a client receives for a save the rules refuse: ${hidden.text.replace(/\s+/g, " ").slice(0, 400)}`);
+  // Review finding on #3: QGIS reads <Name>sec<x/>ret</Name> as "secret".
+  const split = await post("bob", update("assets", 2, { "sec<x/>ret": "split name" }));
+  record("field-hidden-split-name-refused", !succeeded(split) && (await feature("assets", 2)).properties.secret === "secret 1", `bob sets "sec<x/>ret": status ${split.status}: ${short(split.text)}`);
+  const ro = await post("bob", update("assets", 2, { status: "closed" }));
+  record("field-readonly-refused", !succeeded(ro) && (await feature("assets", 2)).properties.status === "open", `bob sets read-only "status": status ${ro.status}: ${short(ro.text)}`);
+  const ok = await post("bob", update("assets", 2, { name: "bob renamed" }));
+  record("field-allowed", succeeded(ok) && (await feature("assets", 2)).properties.name === "bob renamed", `bob sets "name": ${short(ok.text)}`);
+  const mixed = await post("bob", update("assets", 4, { name: "fine" }) + update("assets", 4, { secret: "not fine" }));
+  record("field-refusal-covers-the-whole-transaction", !succeeded(mixed) && (await feature("assets", 4)).properties.name === "asset 3", `bob's transaction with one allowed and one refused update: status ${mixed.status}: ${short(mixed.text)}`);
+
+  // Changing details and moving shapes are separate rights.
+  const erinMove = await post("erin", update("assets", 2, { geometry: POINT(145.0, -37.9) }));
+  record("move-only-may-move", succeeded(erinMove) && coords(await feature("assets", 2)) === "145.000,-37.900", `erin, who may only move, moves a feature: ${short(erinMove.text)}`);
+  const erinName = await post("erin", update("assets", 2, { name: "erin" }));
+  record("move-only-may-not-change", !succeeded(erinName) && (await feature("assets", 2)).properties.name === "bob renamed", `erin changes a name: status ${erinName.status}: ${short(erinName.text)}`);
+  const bobMove = await post("bob", update("assets", 4, { geometry: POINT(145.0, -37.9) }));
+  record("change-only-may-not-move", !succeeded(bobMove) && coords(await feature("assets", 4)) !== "145.000,-37.900", `bob, who may change but not move, moves his own: status ${bobMove.status}: ${short(bobMove.text)}`);
+
+  // A layer whose WFS type name differs from its published name.
+  const note = await post("alice", update("site_notes", 1, { name: "renamed note" }));
+  record("type-name-allowed", succeeded(note), `alice updates "site notes" as site_notes: ${short(note.text)}`);
+  const bobNote = await post("bob", update("site_notes", 1, { name: "bob's note" }));
+  record("type-name-refused", !succeeded(bobNote), `bob, who may only see "site notes", updates it: status ${bobNote.status}: ${short(bobNote.text)}`);
+
+  // Saves the request filter refuses before QGIS Server reads them.
+  const kvp = await req({ SERVICE: "WFS", VERSION: "1.0.0", REQUEST: "Transaction", OPERATION: "Delete", TYPENAME: "assets", FEATUREID: "assets.6" }, { who: "alice" });
+  record("transaction-as-get-refused", !succeeded(kvp) && (await feature("assets", 6)), `alice's GET transaction: status ${kvp.status}: ${short(kvp.text)}`);
+  const doctype = await req({ SERVICE: "WFS", REQUEST: "Transaction" }, { who: "alice", body: `<?xml version="1.0"?><!DOCTYPE t [<!ENTITY e "secret">]>${tx(update("assets", 1, { name: "&e;" })).replace(/^<\?xml[^>]*>/, "")}` });
+  record("transaction-doctype-refused", doctype.status === 403 && (await feature("assets", 1)).properties.name === "alice renamed", `a body with a DOCTYPE: status ${doctype.status}: ${short(doctype.text)}`);
+  const native = await post("alice", `<wfs:Native vendorId="x" safeToIgnore="true">anything</wfs:Native>`);
+  record("transaction-native-refused", native.status === 403, `a Native action: status ${native.status}: ${short(native.text)}`);
+  const noRequest = await req({ SERVICE: "WFS" }, { who: "bob", body: tx(update("assets", 2, { secret: "via body only" })) });
+  record("transaction-named-only-in-body", !succeeded(noRequest) && (await feature("assets", 2)).properties.secret === "secret 1", `bob's hidden-field update with REQUEST only in the body: status ${noRequest.status}: ${short(noRequest.text)}`);
+
+  // Review finding on #3: a line break in a type name wrote a second, forged audit line.
+  const forged = "x&#10;audit id=FORGED email=alice@example.org layer=assets action=delete outcome=done";
+  const forgery = await req({ SERVICE: "WFS", REQUEST: "Transaction" }, { who: "bob", body: tx(`<wfs:Update typeName="${forged}"><wfs:Property><wfs:Name>a</wfs:Name></wfs:Property></wfs:Update>`) });
+  record("audit-forgery-attempt", null, `bob's save with a line break in its type name: status ${forgery.status}: ${short(forgery.text)}`);
+
+  // An add by someone allowed to add.
+  const aliceIns = await post("alice", insert("assets", { name: "alice new", owner: "alice@example.org" }));
+  record("insert-allowed", succeeded(aliceIns), `alice inserts: ${short(aliceIns.text)}`);
+  const carolDel = await post("carol", del("assets", 8));
+  record("delete-allowed", succeeded(carolDel) && !(await feature("assets", 8)), `carol deletes a feature: ${short(carolDel.text)}`);
+}
+
+async function checkServices() {
+  for (const s of ["WCS", "WMTS"]) {
+    const r = await req({ SERVICE: s, REQUEST: "GetCapabilities" }, { who: "alice" });
+    record(`service-${s.toLowerCase()}-refused`, r.status === 403, `status ${r.status}: ${short(r.text)}`);
+  }
+  const api = await req({}, { who: "alice", path: "wfs3/collections/restricted/items.json" });
+  record("service-ogcapi-refused", api.status === 403 && !/restricted 0/.test(api.text), `OGC API Features items: status ${api.status}: ${short(api.text)}`);
+}
+
+async function checkProjects() {
+  // Each project's own rules: bob sees restricted in project B only.
+  const [a, b] = [names((await gps("bob")).text), names((await gps("bob", { map: MAP_B })).text)];
+  record("rules-per-project", !a.includes("restricted") && b.includes("restricted") && !b.includes("castlegate_rules_b"), `bob in project A sees [${a.join(", ")}], in B [${b.join(", ")}]`);
+  const none = names((await gps("alice", { map: MAP_NONE })).text);
+  record("no-rules-variable-serves-nothing", !["assets", "restricted"].some((n) => none.includes(n)), `alice in a project with no rules variable sees [${none.join(", ")}]`);
+  const missing = names((await gps("alice", { map: MAP_MISSING })).text);
+  record("missing-rules-layer-serves-nothing", !["assets", "restricted"].some((n) => missing.includes(n)), `alice in a project naming a missing rules layer sees [${missing.join(", ")}]`);
+  // The shared capabilities cache stays off: bob after alice does not get alice's layers.
+  await gps("alice");
+  const after = names((await gps("bob")).text);
+  record("cache-constant-key", !after.includes("restricted"), `bob after alice sees [${after.join(", ")}]`);
+}
+
+function checkLogs() {
+  const text = logs();
+  const audit = text.split("\n").filter((l) => /audit id=/.test(l));
+  record("audit-lines", audit.some((l) => /action=update/.test(l) && /outcome="done"/.test(l)) && audit.some((l) => /outcome="refused/.test(l)), `${audit.length} audit lines; e.g. ${short(audit.find((l) => /outcome="refused \(/.test(l)) ?? audit[0] ?? "")}`);
+  const carried = text.split("\n").filter((l) => /FORGED/.test(l));
+  const forged = carried.filter((l) => /Castlegate\[\d+\]: audit id=FORGED/.test(l) || /^\s*audit id=FORGED/.test(l));
+  record("audit-not-forged", carried.length > 0 && forged.length === 0, `${forged.length} lines start a forged entry; the attempt sits inside ${carried.length} line(s) of bob's own, e.g. ${(carried.find((l) => /audit id=/.test(l)) ?? carried[0] ?? "").slice(0, 260)}`);
+  const raised = text.split("\n").filter((l) => /failed, (answering no|refusing)|Traceback/.test(l));
+  record("no-exceptions", raised.length === 0, `${raised.length} exception log lines${raised.length ? ": " + short(raised.slice(0, 2).join(" || ")) : ""}`);
+  record("server-still-running", alive(), `QGIS Server container ${alive() ? "running" : "stopped"}`);
+  record("loaded", /Castlegate.*loaded 0\.1\.0/.test(text), short(text.split("\n").find((l) => /loaded 0\.1\.0/.test(l)) ?? "no load line"));
+}
+
+async function main() {
+  console.log(`work folder ${work}, image ${BASE_IMAGE}${MSSQL ? ", layers in SQL Server" : ""}`);
+  await prepare();
+  await startServer();
+  const version = docker(["exec", "castlegate-server", "sh", "-c", "dpkg-query -W -f '${Version}' qgis-server 2>/dev/null"], { allowFail: true }).stdout.trim();
+  record("qgis-version", null, `qgis-server ${version}`);
+  await checkTokens();
+  await checkStatus();
+  await checkLayers();
+  await checkFilters();
+  await checkSaves();
+  await checkServices();
+  await checkProjects();
+  checkLogs();
+  writeFileSync(join(work, "server-log.txt"), logs());
+
+  console.log("\n# Stock QGIS Server, no plugin");
+  await startServer({ plugin: false });
+  const open = await gps(undefined);
+  record("stock-serves-everyone", null, `with no plugin, a request with no token gets status ${open.status} and [${names(open.text).join(", ")}]`);
+  const stockSplit = await post(undefined, update("assets", 2, { "sec<x/>ret": "split name" }));
+  const afterSplit = (await getFeatures(undefined, "assets", { FEATUREID: "assets.2" })).json?.features?.[0]?.properties?.secret;
+  record("stock-reads-split-name", null, `with no plugin, an update naming "sec<x/>ret" ${succeeded(stockSplit) ? "succeeded" : "failed"} and secret is now "${afterSplit}"`);
+
+  docker(["rm", "-f", "castlegate-server", "castlegate-issuer", "castlegate-mssql"], { allowFail: true });
+  docker(["network", "rm", NET], { allowFail: true });
+  writeFileSync(join(work, "results.json"), JSON.stringify(results, null, 1));
+  const failed = results.filter((r) => r.ok === false);
+  console.log(`\n${results.filter((r) => r.ok).length} passed, ${failed.length} failed, ${results.filter((r) => r.ok === null).length} observations`);
+  process.exitCode = failed.length ? 1 : 0;
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exitCode = 2;
+});

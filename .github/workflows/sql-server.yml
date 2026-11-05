@@ -1,0 +1,41 @@
+name: SQL Server
+
+# The plugin tests with the layers and rules tables in SQL Server, weekly and on
+# request rather than on every pull request. Running them accepts Microsoft's
+# licence terms for SQL Server 2022 Developer edition and ODBC Driver 18.
+
+on:
+  schedule:
+    - cron: '0 20 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plugin-mssql:
+    name: plugin tests on SQL Server (qgis/qgis-server:${{ matrix.image }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ltr, stable]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: 24.22.1
+      - run: docker pull -q qgis/qgis-server:${{ matrix.image }}
+      - run: docker pull -q mcr.microsoft.com/mssql/server:2022-latest
+      - run: node tests/server/run.mjs --image qgis/qgis-server:${{ matrix.image }} "$RUNNER_TEMP/castlegate"
+        env:
+          CASTLEGATE_BACKEND: mssql
+      - name: Upload the server log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: server-log-mssql-${{ matrix.image }}
+          path: ${{ runner.temp }}/castlegate/*.txt
+          if-no-files-found: warn
+          retention-days: 7
