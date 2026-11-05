@@ -33,14 +33,24 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(_NoRedirects)
 
 
+class Unreachable(Exception):
+    pass
+
+
 def request(url, method="GET", headers=None):
-    """(status, headers, body text) for one request; HTTP errors are answers, not failures."""
+    """(status, headers, body text) for one request; HTTP errors are answers, not failures.
+
+    Any failure to get an answer at all, such as a refused connection, a timeout or a
+    reset, raises Unreachable.
+    """
     r = urllib.request.Request(url, method=method, headers=headers or {})
     try:
         with _opener.open(r, timeout=30) as response:
             return response.status, response.headers, response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         return e.code, e.headers, e.read().decode("utf-8", "replace")
+    except (OSError, ValueError) as e:  # URLError, timeouts and resets are OSErrors; a bad URL a ValueError
+        raise Unreachable(str(e))
 
 
 def status_url(base, project):
@@ -63,11 +73,14 @@ def main(argv=None):
             failed.append(message)
 
     try:
-        code, headers, body = request(url)
-    except Exception as e:  # noqa: BLE001 - any failure to connect is reported the same way
+        return _checks(args, url, failed, report)
+    except Unreachable as e:
         print("FAIL  could not reach %s: %s" % (args.address, e))
         return 2
 
+
+def _checks(args, url, failed, report):
+    code, headers, body = request(url)
     challenge = headers.get("WWW-Authenticate", "")
     if code == 401 and challenge.lower().startswith("bearer"):
         report(True, "Castlegate is loaded: a request with no sign-in is refused with 401 and WWW-Authenticate: Bearer")
