@@ -102,8 +102,9 @@ if ($Uninstall) {
 
 # ---- the folder rules --------------------------------------------------------------------
 #
-# No one but administrators and the system may change $Root or anything in it, or rename,
-# delete or re-permission any folder above it, and $Plugins holds Castlegate Server alone.
+# No one but administrators and the system may change $Root or anything in it, except that the
+# pool's account may write in $Logs; no one else may rename, delete or re-permission any folder
+# above it; and $Plugins holds Castlegate Server alone.
 # Everything that changes these folders goes through Protect-Ancestors and Set-FolderRule.
 
 $Admins = '*S-1-5-32-544'
