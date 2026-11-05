@@ -21,7 +21,7 @@ jobs:
       fail-fast: false
       matrix:
         # 3.12 is the Python OSGeo4W ships with QGIS Server on Windows; 3.14 is
-        # the one in the qgis/qgis-server:ltr Docker image.
+        # the one in the qgis/qgis-server Docker images.
         python: ['3.12', '3.14']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -29,3 +29,30 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m unittest discover -s tests/core -t . -v
+      - run: python -m unittest discover -s tests/plugin -t . -v
+
+  plugin:
+    name: plugin tests (qgis/qgis-server:${{ matrix.image }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # ltr is the long-term release; stable the latest release. latest is the
+        # nightly build, so it is not tested here.
+        image: [ltr, stable]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: 24.22.1
+      - run: docker pull -q qgis/qgis-server:${{ matrix.image }}
+      - run: node tests/server/run.mjs --image qgis/qgis-server:${{ matrix.image }} "$RUNNER_TEMP/castlegate"
+      - name: Upload the server log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: server-log-${{ matrix.image }}
+          path: ${{ runner.temp }}/castlegate/*.txt
+          if-no-files-found: warn
+          retention-days: 7

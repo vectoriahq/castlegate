@@ -2,6 +2,8 @@
 
 The rules say who may see and edit what. They are a table the administrator edits in QGIS, kept wherever QGIS can read it: SQL Server, PostGIS, or a GeoPackage beside the project. `core/rules.py` reads it.
 
+The table is a layer of the project itself, named in the project variable `castlegate_rules_layer` (Project Properties, Variables, in QGIS). So each project on a server has its own rules, read through the project's own data connections. Castlegate Server never serves that layer, whatever the project's publishing settings say, and serves nothing from a project with no such variable or whose rules layer cannot be read. Each QGIS Server process reads the rules again once its copy is 30 seconds old.
+
 ## Columns
 
 | Column | Holds |
@@ -28,6 +30,7 @@ A person may do anything any of their rows allows. There are no rows that take a
 - **Filters** from those rows combine with OR, and a row with an empty filter opens that right to every feature. A row's `edit_filter` applies to each edit it grants, separately: a row allowing deletes with no filter lets the person delete any feature, but changes nothing about which features they may change.
 - **A field is hidden** only where every row that lets the person see the layer hides it. It is **read-only when adding** only where every row granting `can_add` makes it read-only or hidden, and the same for changing with `can_change`.
 - **A row counts only for what it grants.** A row that lets someone delete but not see does not widen which features or fields they see.
+- **One save making several kinds of edit to a layer,** such as a change and a delete together, must pass the `edit_filter` of each kind for every feature it touches, because QGIS Server does not say which kind of edit it is checking.
 
 ## Rows that cannot be read
 
