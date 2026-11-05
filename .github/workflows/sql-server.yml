@@ -1,12 +1,10 @@
 name: SQL Server
 
-# The plugin tests with the layers and rules tables in SQL Server, weekly and on
-# request rather than on every pull request. Running them accepts Microsoft's
-# licence terms for SQL Server 2022 Developer edition and ODBC Driver 18.
+# The plugin tests with the layers and rules tables in SQL Server, run only when
+# someone starts them. Running them accepts Microsoft's licence terms for
+# SQL Server 2022 Developer edition and ODBC Driver 18.
 
 on:
-  schedule:
-    - cron: '0 20 * * 0'
   workflow_dispatch:
 
 permissions:
