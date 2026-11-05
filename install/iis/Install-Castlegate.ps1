@@ -27,8 +27,8 @@ created and leaves the folder.
 #>
 [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Install')]
 param(
-    # The Entra tenant (directory) ID.
-    [Parameter(Mandatory, ParameterSetName = 'Install')][string]$TenantId,
+    # The Entra tenant (directory) ID. Required unless -Issuer names another provider.
+    [Parameter(ParameterSetName = 'Install')][string]$TenantId,
     # The application (client) ID of the app registration for this QGIS Server.
     [Parameter(Mandatory, ParameterSetName = 'Install')][string]$ClientId,
     # The release zip holding castlegate_server/.
@@ -75,6 +75,10 @@ function Stop-Install([string]$message) {
 }
 
 # ---- checks before changing anything -----------------------------------------------------
+
+if (-not $Uninstall -and -not $TenantId -and -not $Issuer) {
+    Stop-Install 'pass -TenantId for Entra, or -Issuer for another OpenID Connect provider.'
+}
 
 $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -156,13 +160,15 @@ $vars['QT_PLUGIN_PATH'] = $qt -join ';'
 $vars['PYTHONPATH'] = "$app\python;" + $o4w['PYTHONPATH']
 $vars['TEMP'] = Join-Path $env:windir 'TEMP'
 $vars['QGIS_PLUGINPATH'] = $Plugins
-$vars['QGIS_SERVER_LOG_FILE'] = Join-Path $Root 'qgis_server.log'
+$Logs = Join-Path $Root 'logs'
+$vars['QGIS_SERVER_LOG_FILE'] = Join-Path $Logs 'qgis_server.log'
 # Warning keeps the plugin's audit lines, which it writes at Warning.
 $vars['QGIS_SERVER_LOG_LEVEL'] = '1'
 $vars['CASTLEGATE_ISSUER'] = if ($Issuer) { $Issuer } else { "https://login.microsoftonline.com/$TenantId/v2.0" }
 $vars['CASTLEGATE_AUDIENCE'] = $ClientId
 $vars['CASTLEGATE_SCOPE'] = $Scope
-$vars['CASTLEGATE_TENANT'] = $TenantId
+# Only with a tenant: the plugin then refuses a token whose tid differs, and other providers send no tid.
+if ($TenantId) { $vars['CASTLEGATE_TENANT'] = $TenantId }
 foreach ($k in $Environment.Keys) { $vars[$k] = [string]$Environment[$k] }
 
 # ---- the pool ----------------------------------------------------------------------------
@@ -268,8 +274,13 @@ if ($PSCmdlet.ShouldProcess((Join-Path $Root 'web.config'), "write the CORS rule
 
 # ---- rights, restart, check --------------------------------------------------------------
 
-if ($PSCmdlet.ShouldProcess($identity, 'grant write rights on the folder and data folders')) {
-    icacls $Root /grant "${identity}:(OI)(CI)M" | Out-Null
+if ($PSCmdlet.ShouldProcess($identity, 'grant read rights on the folder, and write rights on its logs folder and the data folders')) {
+    # Read only on the folder: the plugin and web.config must not be writable by the process
+    # that answers requests, which could otherwise remove the plugin or widen the CORS rule.
+    # /grant:r replaces whatever an earlier run granted.
+    New-Item -ItemType Directory -Force $Logs | Out-Null
+    icacls $Root /grant:r "${identity}:(OI)(CI)RX" | Out-Null
+    icacls $Logs /grant:r "${identity}:(OI)(CI)M" | Out-Null
     foreach ($folder in $DataFolder) { icacls $folder /grant "${identity}:(OI)(CI)M" | Out-Null; Say "$identity may write $folder" }
 }
 

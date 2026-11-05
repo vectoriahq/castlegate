@@ -9,11 +9,11 @@ Default Web Site
 ├── /existing/qgisserver     → qgis_mapserv.fcgi.exe       its own pool      (left as it is)
 └── /groundwork/qgisserver   → qgis_mapserv.fcgi.exe|gw    pool GroundworkQgisServer
                                QGIS_PLUGINPATH=C:\Groundwork\IIS\QgisServer\plugins
-                               QGIS_SERVER_LOG_FILE=C:\Groundwork\IIS\QgisServer\qgis_server.log
+                               QGIS_SERVER_LOG_FILE=C:\Groundwork\IIS\QgisServer\logs\qgis_server.log
                                CASTLEGATE_ISSUER, _AUDIENCE, _SCOPE, _TENANT
 ```
 
-- **A folder,** `C:\Groundwork\IIS\QgisServer`, with the plugin in `plugins\castlegate_server`, the log, and a `web.config` holding the CORS rule.
+- **A folder,** `C:\Groundwork\IIS\QgisServer`, with the plugin in `plugins\castlegate_server`, a `web.config` holding the CORS rule, and the log in `logs\`. The pool may read the folder but write only `logs\`, so the process answering requests cannot change the plugin or widen the CORS rule.
 - **A pool,** `GroundworkQgisServer`, running as its own identity or as the account you give.
 - **A FastCGI entry** for OSGeo4W's `qgis_mapserv.fcgi.exe` with the argument `gw`. IIS tells FastCGI entries apart by program and arguments together, so it is a second entry for the same program, with its own environment variables: OSGeo4W's, the plugin folder, the log, and the plugin's settings.
 - **The application** `/groundwork/qgisserver`, with a handler mapping to that entry.
@@ -35,7 +35,9 @@ It changes nothing of an existing QGIS Server: no other pool, FastCGI entry, app
 
 ## Running it
 
-In Windows PowerShell opened with **Run as administrator**:
+In Windows PowerShell opened with **Run as administrator**. For a sign-in provider other than Entra, pass `-Issuer` with its issuer address instead of `-TenantId`.
+
+With Entra:
 
 ```powershell
 .\Install-Castlegate.ps1 -TenantId <tenant ID> -ClientId <the app registration's application (client) ID> -PluginZip .\castlegate_server-0.1.0.zip -CheckMap C:\Projects\assets.qgs
@@ -73,4 +75,4 @@ Add the status check to your monitoring, so a QGIS Server that starts without th
 C:\OSGeo4W\apps\Python312\python.exe C:\Groundwork\IIS\QgisServer\plugins\castlegate_server\tools\check.py https://<your server>/groundwork/qgisserver --map <a project>
 ```
 
-The log is `C:\Groundwork\IIS\QgisServer\qgis_server.log`, with one audit line per save at Warning.
+The log is `C:\Groundwork\IIS\QgisServer\logs\qgis_server.log`, with one audit line per save at Warning.

@@ -85,7 +85,7 @@ async function checks() {
   record("existing-serves-without-sign-in", open.includes("assets") && open.includes("castlegate_rules"), `the existing server, with no token, lists [${open.join(", ")}]`);
   const existingCheck = check(EXISTING);
   record("plugin-not-in-existing-pool", existingCheck.status === 1 && /NOT loaded/.test(existingCheck.stdout), `check.py against the existing server: exit ${existingCheck.status}: ${existingCheck.stdout.trim()}`);
-  const gwLog = readFileSync("C:\\Groundwork\\IIS\\QgisServer\\qgis_server.log", "utf-8");
+  const gwLog = readFileSync("C:\\Groundwork\\IIS\\QgisServer\\logs\\qgis_server.log", "utf-8");
   const exLog = readFileSync("C:\\Existing\\QgisServer\\qgis_server.log", "utf-8");
   record("plugin-loads-in-groundwork-pool-only", /Castlegate.*loaded 0\.1\.0/.test(gwLog) && !/Castlegate/.test(exLog), `Groundwork's log ${/loaded 0\.1\.0/.test(gwLog) ? "has" : "lacks"} the load line; the existing log ${/Castlegate/.test(exLog) ? "mentions" : "never mentions"} Castlegate`);
   const audit = gwLog.split(/\r?\n/).filter((l) => /audit id=/.test(l));

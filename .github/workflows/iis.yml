@@ -60,7 +60,7 @@ jobs:
         run: python scripts/build.py build
 
       - name: Build the test data
-        # Windows PowerShell 5.1, as IT runs it: the WebAdministration module's IIS: drive needs it.
+        # Windows PowerShell 5.1, as IT runs it.
         shell: powershell
         run: ./tests/iis/Build-TestData.ps1
 
@@ -88,6 +88,20 @@ jobs:
             -Scope access -Issuer https://localhost:8443/9a9a9a9a-0000-4000-8000-000000000001/v2.0 `
             -PluginZip build/castlegate_server-0.1.0.zip -DataFolder C:\castlegate\data -CheckMap C:\castlegate\data\castlegate.qgs `
             -Environment @{ SSL_CERT_FILE = 'C:\castlegate\tls\issuer.pem'; QGIS_SERVER_LOG_LEVEL = '0' }
+
+      - name: Check the pool cannot write the plugin or its CORS rule
+        shell: powershell
+        run: |
+          $identity = 'IIS AppPool\GroundworkQgisServer'
+          # Only the flags that let it change something: Modify and FullControl also carry the read flags.
+          $write = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteAttributes, WriteExtendedAttributes, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership'
+          foreach ($path in 'C:\Groundwork\IIS\QgisServer\plugins\castlegate_server\plugin.py', 'C:\Groundwork\IIS\QgisServer\web.config', 'C:\Groundwork\IIS\QgisServer\logs') {
+            $rules = (Get-Acl $path).Access | Where-Object { $_.IdentityReference.Value -eq $identity -and $_.AccessControlType -eq 'Allow' -and ($_.FileSystemRights -band $write) }
+            $can = [bool]$rules
+            "$path writable by the pool: $can"
+            if ($path -like '*\logs' -and -not $can) { throw "the pool cannot write its log folder" }
+            if ($path -notlike '*\logs' -and $can) { throw "the pool can write $path" }
+          }
 
       - name: Check it through IIS
         run: node tests/iis/run.mjs C:\castlegate\tls\issuer.pfx castlegate-tests
@@ -126,7 +140,7 @@ jobs:
         with:
           name: iis-logs
           path: |
-            C:\Groundwork\IIS\QgisServer\qgis_server.log
+            C:\Groundwork\IIS\QgisServer\logs\qgis_server.log
             C:\Existing\QgisServer\qgis_server.log
             C:\castlegate\existing-*.txt
           if-no-files-found: warn
