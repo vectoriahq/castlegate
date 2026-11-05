@@ -17,9 +17,10 @@
 
 import { spawnSync } from "child_process";
 import { cpSync, mkdirSync, rmSync, writeFileSync } from "fs";
-import { createSign, generateKeyPairSync as genKeys, randomBytes } from "crypto";
+import { randomBytes } from "crypto";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
+import { AUDIENCE, b64, G, issuerKeys, KID, people, RULES, SCOPE, TENANT } from "./fixtures.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..", "..");
@@ -38,52 +39,12 @@ const NET = "castlegate-tests";
 const PORT = 8020;
 const BASE = `http://localhost:${PORT}/`;
 const OWS = "ows/";
-const TENANT = "9a9a9a9a-0000-4000-8000-000000000001";
 const ISSUER_HOST = "castlegate-issuer";
 const ISSUER = `https://${ISSUER_HOST}:8443/${TENANT}/v2.0`;
-const AUDIENCE = "api://castlegate-tests";
-const SCOPE = "access";
-const G = "11111111-2222-3333-4444-555555555555";
 const MAP = "/io/data/castlegate.qgs";
 const MAP_B = "/io/data/castlegate-b.qgs";
 const MAP_NONE = "/io/data/castlegate-norules.qgs";
 const MAP_MISSING = "/io/data/castlegate-missing.qgs";
-
-const people = {
-  alice: { oid: "aaaaaaaa-0000-4000-8000-00000000000a", preferred_username: "alice@example.org" },
-  bob: { oid: "bbbbbbbb-0000-4000-8000-00000000000b", preferred_username: "bob@example.org" },
-  carol: { oid: "cccccccc-0000-4000-8000-00000000000c", preferred_username: "carol@example.org", groups: [G] },
-  erin: { oid: "eeeeeeee-0000-4000-8000-00000000000e", preferred_username: "erin@example.org" },
-  frank: { oid: "ffffffff-0000-4000-8000-00000000000f", preferred_username: "frank@example.org" },
-};
-
-const all = { can_see: true, can_add: true, can_change: true, can_move: true, can_delete: true };
-const RULES = {
-  a: [
-    { kind: "person", who: "alice@example.org", layer: "assets", ...all, edit_filter: '"owner" = {{email}}' },
-    { kind: "person", who: "alice@example.org", layer: "restricted", can_see: true },
-    { kind: "person", who: "alice@example.org", layer: "big", can_see: true, see_filter: '"owner" = {{email}}' },
-    { kind: "person", who: "alice@example.org", layer: "site notes", can_see: true, can_change: true },
-    // A row naming the rules layer itself: the plugin must still never serve it.
-    { kind: "person", who: "alice@example.org", layer: "castlegate_rules", ...all },
-    {
-      kind: "person", who: "bob@example.org", layer: "assets", can_see: true, can_change: true,
-      see_filter: '"owner" = {{email}}', edit_filter: '"owner" = {{email}}', hidden_fields: "secret", readonly_fields: "status",
-    },
-    { kind: "person", who: "bob@example.org", layer: "site notes", can_see: true },
-    { kind: "group", who: G, layer: "assets", can_see: true },
-    // A group row granting deletes with no filter must not widen carol's changes.
-    { kind: "group", who: G, layer: "assets", can_delete: true },
-    { kind: "person", who: "carol@example.org", layer: "assets", can_change: true, edit_filter: '"owner" = {{email}}' },
-    { kind: "person", who: people.erin.oid, layer: "assets", can_see: true, can_move: true },
-    { kind: "role", who: "alice@example.org", layer: "big", ...all },
-    { kind: "person", who: "alice@example.org", layer: "big", ...all, see_filter: '"owner" = (' },
-  ],
-  b: [
-    { kind: "person", who: "bob@example.org", layer: "restricted", can_see: true },
-    { kind: "person", who: "bob@example.org", layer: "assets", can_see: true },
-  ],
-};
 
 const results = [];
 function record(id, ok, detail) {
@@ -104,21 +65,7 @@ function docker(dockerArgs, { allowFail = false, env } = {}) {
 
 // ---- keys, tokens and the stub issuer -------------------------------------------------
 
-const signing = genKeys("rsa", { modulusLength: 2048 });
-const stranger = genKeys("rsa", { modulusLength: 2048 });
-const KID = "test-key-1";
-const b64 = (o) => Buffer.from(typeof o === "string" ? o : JSON.stringify(o)).toString("base64url");
-
-function token(claims = {}, { key = signing.privateKey, header = {} } = {}) {
-  const now = Math.floor(Date.now() / 1000);
-  const body = { iss: ISSUER, aud: AUDIENCE, tid: TENANT, scp: SCOPE, iat: now, nbf: now - 10, exp: now + 3600, ver: "2.0", ...claims };
-  for (const k of Object.keys(body)) if (body[k] === undefined) delete body[k];
-  const input = `${b64({ alg: "RS256", typ: "JWT", kid: KID, ...header })}.${b64(body)}`;
-  const signer = createSign("RSA-SHA256");
-  signer.update(input);
-  return `${input}.${signer.sign(key).toString("base64url")}`;
-}
-const tok = (who, extra) => token({ ...people[who], ...extra });
+const { stranger, token, tok, jwks } = issuerKeys(ISSUER);
 
 const dirs = {
   build: join(work, "build"),
@@ -130,11 +77,10 @@ const dirs = {
 };
 
 function writeIssuer() {
-  const jwk = signing.publicKey.export({ format: "jwk" });
   const wellKnown = join(dirs.issuer, TENANT, "v2.0", ".well-known");
   mkdirSync(wellKnown, { recursive: true });
   writeFileSync(join(wellKnown, "openid-configuration"), JSON.stringify({ issuer: ISSUER, jwks_uri: `https://${ISSUER_HOST}:8443/keys.json` }));
-  writeFileSync(join(dirs.issuer, "keys.json"), JSON.stringify({ keys: [{ ...jwk, kid: KID, use: "sig", alg: "RS256" }] }));
+  writeFileSync(join(dirs.issuer, "keys.json"), JSON.stringify(jwks));
   // The plugin fetches over HTTPS only, so the stub issuer gets a certificate QGIS Server is told to trust.
   mkdirSync(dirs.tls, { recursive: true });
   // Made with the image's own openssl, so the host needs none.

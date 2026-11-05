@@ -1,0 +1,128 @@
+name: IIS
+
+# The IIS install profile on a Windows Server machine: IIS with OSGeo4W's QGIS Server, an
+# existing QGIS Server set up the way target clients run one, then install/iis/Install-Castlegate.ps1
+# beside it, checked through IIS with a stub sign-in issuer. Runs when the IIS profile or the
+# plugin changes, and on request, because Windows minutes cost twice Linux minutes here.
+
+on:
+  pull_request:
+    paths:
+      - 'install/iis/**'
+      - 'install/common/**'
+      - 'server/**'
+      - 'core/**'
+      - 'tests/iis/**'
+      - '.github/workflows/iis.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  iis:
+    name: IIS profile (Windows Server 2022, OSGeo4W qgis-ltr-server)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: 24.22.1
+
+      - name: Add IIS with CGI
+        run: Install-WindowsFeature Web-Server, Web-CGI, Web-Mgmt-Tools | Format-Table -AutoSize
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: C:\osgeo4w-packages
+          key: osgeo4w-qgis-ltr-server-v1
+
+      - name: Install OSGeo4W's qgis-ltr-server
+        run: |
+          Invoke-WebRequest -UseBasicParsing -Uri https://download.osgeo.org/osgeo4w/v2/osgeo4w-setup.exe -OutFile "$env:RUNNER_TEMP\osgeo4w-setup.exe"
+          $p = Start-Process -FilePath "$env:RUNNER_TEMP\osgeo4w-setup.exe" -Wait -PassThru -ArgumentList '--advanced', '--quiet-mode', '--autoaccept', '--root', 'C:\OSGeo4W', '--site', 'https://download.osgeo.org/osgeo4w/v2', '--local-package-dir', 'C:\osgeo4w-packages', '--packages', 'qgis-ltr-server'
+          if ($p.ExitCode -ne 0) { throw "OSGeo4W setup ended with $($p.ExitCode)" }
+          Get-Item C:\OSGeo4W\apps\qgis-ltr\bin\qgis_mapserv.fcgi.exe | Select-Object FullName, Length
+
+      - name: Build the plugin
+        run: python scripts/build.py build
+
+      - name: Build the test data
+        # Windows PowerShell 5.1, as IT runs it: the WebAdministration module's IIS: drive needs it.
+        shell: powershell
+        run: ./tests/iis/Build-TestData.ps1
+
+      - name: Make the stub issuer's certificate
+        run: |
+          New-Item -ItemType Directory -Force C:\castlegate\tls | Out-Null
+          $cert = New-SelfSignedCertificate -DnsName localhost -CertStoreLocation Cert:\LocalMachine\My -NotAfter (Get-Date).AddDays(1)
+          $password = ConvertTo-SecureString -String 'castlegate-tests' -Force -AsPlainText
+          Export-PfxCertificate -Cert $cert -FilePath C:\castlegate\tls\issuer.pfx -Password $password | Out-Null
+          # QGIS Server's Python is told to trust it through SSL_CERT_FILE.
+          Set-Content -Path C:\castlegate\tls\issuer.pem -Value $cert.ExportCertificatePem() -Encoding ascii
+
+      - name: Set up the existing QGIS Server
+        # Windows PowerShell 5.1, as IT runs it: the WebAdministration module's IIS: drive needs it.
+        shell: powershell
+        run: |
+          ./tests/iis/New-ExistingServer.ps1
+          ./tests/iis/Get-ExistingServer.ps1 | Set-Content C:\castlegate\existing-before.txt
+
+      - name: Install Castlegate Server
+        # Windows PowerShell 5.1, as IT runs it: the WebAdministration module's IIS: drive needs it.
+        shell: powershell
+        run: |
+          ./install/iis/Install-Castlegate.ps1 -TenantId 9a9a9a9a-0000-4000-8000-000000000001 -ClientId c0c0c0c0-0000-4000-8000-0000000000c0 `
+            -Scope access -Issuer https://localhost:8443/9a9a9a9a-0000-4000-8000-000000000001/v2.0 `
+            -PluginZip build/castlegate_server-0.1.0.zip -DataFolder C:\castlegate\data -CheckMap C:\castlegate\data\castlegate.qgs `
+            -Environment @{ SSL_CERT_FILE = 'C:\castlegate\tls\issuer.pem' }
+
+      - name: Check it through IIS
+        run: node tests/iis/run.mjs C:\castlegate\tls\issuer.pfx castlegate-tests
+
+      - name: Check the existing server is unchanged
+        # Windows PowerShell 5.1, as IT runs it: the WebAdministration module's IIS: drive needs it.
+        shell: powershell
+        run: |
+          ./tests/iis/Get-ExistingServer.ps1 | Set-Content C:\castlegate\existing-after.txt
+          $diff = Compare-Object (Get-Content C:\castlegate\existing-before.txt) (Get-Content C:\castlegate\existing-after.txt)
+          if ($diff) { $diff | Format-Table -AutoSize | Out-String; throw 'Install-Castlegate.ps1 changed the existing QGIS Server' }
+          'the existing QGIS Server is as it was'
+
+      - name: Run the install a second time
+        # Windows PowerShell 5.1, as IT runs it: the WebAdministration module's IIS: drive needs it.
+        shell: powershell
+        run: |
+          ./install/iis/Install-Castlegate.ps1 -TenantId 9a9a9a9a-0000-4000-8000-000000000001 -ClientId c0c0c0c0-0000-4000-8000-0000000000c0 `
+            -Scope access -Issuer https://localhost:8443/9a9a9a9a-0000-4000-8000-000000000001/v2.0 `
+            -PluginZip build/castlegate_server-0.1.0.zip -DataFolder C:\castlegate\data -CheckMap C:\castlegate\data\castlegate.qgs `
+            -Environment @{ SSL_CERT_FILE = 'C:\castlegate\tls\issuer.pem' }
+
+      - name: Uninstall, and the existing server still answers
+        # Windows PowerShell 5.1, as IT runs it: the WebAdministration module's IIS: drive needs it.
+        shell: powershell
+        run: |
+          ./install/iis/Install-Castlegate.ps1 -Uninstall
+          try { $gw = (Invoke-WebRequest -UseBasicParsing 'http://localhost/groundwork/qgisserver?SERVICE=WMS&REQUEST=GetCapabilities').StatusCode } catch { $gw = [int]$_.Exception.Response.StatusCode }
+          $ex = (Invoke-WebRequest -UseBasicParsing 'http://localhost/existing/qgisserver?SERVICE=WMS&REQUEST=GetCapabilities&MAP=C:\castlegate\data\castlegate.qgs').StatusCode
+          "Groundwork's path now answers $gw; the existing server answers $ex"
+          if ($gw -ne 404 -or $ex -ne 200) { throw 'the uninstall did not leave the machine as expected' }
+
+      - name: Upload the logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: iis-logs
+          path: |
+            C:\Groundwork\IIS\QgisServer\qgis_server.log
+            C:\Existing\QgisServer\qgis_server.log
+            C:\castlegate\existing-*.txt
+          if-no-files-found: warn
+          retention-days: 7
