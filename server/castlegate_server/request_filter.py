@@ -18,6 +18,7 @@ Each method catches everything and refuses: an exception escaping a filter
 method ends the QGIS Server process.
 """
 
+import json
 import traceback
 
 from qgis.core import Qgis, QgsProject
@@ -157,17 +158,19 @@ class RequestFilter(QgsServerFilter):
         else:
             outcome = "done"
         for action in state.actions:
+            # Every value that comes from the token or the request is written as a
+            # JSON string, so none can pose as another field of the line.
             log(
                 "audit id=%s email=%s layer=%s action=%s features=%s fields=%s shape=%s outcome=%s"
                 % (
-                    state.person.id,
-                    state.person.email or "-",
-                    state.type_names.get(action.layer) or action.layer,
+                    json.dumps(state.person.id),
+                    json.dumps(state.person.email),
+                    json.dumps(state.type_names.get(action.layer) or action.layer),
                     action.kind,
-                    action.features or "by filter",
-                    ",".join(sorted(action.fields)) or "-",
+                    action.features or "by-filter",
+                    json.dumps(sorted(action.fields)),
                     "yes" if action.geometry else "no",
-                    outcome,
+                    json.dumps(outcome),
                 ),
                 Qgis.MessageLevel.Warning,
             )

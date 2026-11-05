@@ -438,6 +438,11 @@ async function checkSaves() {
   const noRequest = await req({ SERVICE: "WFS" }, { who: "bob", body: tx(update("assets", 2, { secret: "via body only" })) });
   record("transaction-named-only-in-body", !succeeded(noRequest) && (await feature("assets", 2)).properties.secret === "secret 1", `bob's hidden-field update with REQUEST only in the body: status ${noRequest.status}: ${short(noRequest.text)}`);
 
+  // Review finding on #3: a line break in a type name wrote a second, forged audit line.
+  const forged = "x&#10;audit id=FORGED email=alice@example.org layer=assets action=delete outcome=done";
+  const forgery = await req({ SERVICE: "WFS", REQUEST: "Transaction" }, { who: "bob", body: tx(`<wfs:Update typeName="${forged}"><wfs:Property><wfs:Name>a</wfs:Name></wfs:Property></wfs:Update>`) });
+  record("audit-forgery-attempt", null, `bob's save with a line break in its type name: status ${forgery.status}: ${short(forgery.text)}`);
+
   // An add by someone allowed to add.
   const aliceIns = await post("alice", insert("assets", { name: "alice new", owner: "alice@example.org" }));
   record("insert-allowed", succeeded(aliceIns), `alice inserts: ${short(aliceIns.text)}`);
@@ -471,7 +476,10 @@ async function checkProjects() {
 function checkLogs() {
   const text = logs();
   const audit = text.split("\n").filter((l) => /audit id=/.test(l));
-  record("audit-lines", audit.some((l) => /action=update/.test(l) && /outcome=done/.test(l)) && audit.some((l) => /outcome=refused/.test(l)), `${audit.length} audit lines; e.g. ${short(audit.find((l) => /outcome=refused \(/.test(l)) ?? audit[0] ?? "")}`);
+  record("audit-lines", audit.some((l) => /action=update/.test(l) && /outcome="done"/.test(l)) && audit.some((l) => /outcome="refused/.test(l)), `${audit.length} audit lines; e.g. ${short(audit.find((l) => /outcome="refused \(/.test(l)) ?? audit[0] ?? "")}`);
+  const carried = text.split("\n").filter((l) => /FORGED/.test(l));
+  const forged = carried.filter((l) => /Castlegate\[\d+\]: audit id=FORGED/.test(l) || /^\s*audit id=FORGED/.test(l));
+  record("audit-not-forged", carried.length > 0 && forged.length === 0, `${forged.length} lines start a forged entry; the attempt sits inside ${carried.length} line(s) of bob's own, e.g. ${(carried.find((l) => /audit id=/.test(l)) ?? carried[0] ?? "").slice(0, 260)}`);
   const raised = text.split("\n").filter((l) => /failed, (answering no|refusing)|Traceback/.test(l));
   record("no-exceptions", raised.length === 0, `${raised.length} exception log lines${raised.length ? ": " + short(raised.slice(0, 2).join(" || ")) : ""}`);
   record("server-still-running", alive(), `QGIS Server container ${alive() ? "running" : "stopped"}`);
