@@ -16,6 +16,11 @@ on:
       - '.github/workflows/iis.yml'
   workflow_dispatch:
 
+# A newer push supersedes a run still going on an older commit.
+concurrency:
+  group: iis-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -82,7 +87,7 @@ jobs:
           ./install/iis/Install-Castlegate.ps1 -TenantId 9a9a9a9a-0000-4000-8000-000000000001 -ClientId c0c0c0c0-0000-4000-8000-0000000000c0 `
             -Scope access -Issuer https://localhost:8443/9a9a9a9a-0000-4000-8000-000000000001/v2.0 `
             -PluginZip build/castlegate_server-0.1.0.zip -DataFolder C:\castlegate\data -CheckMap C:\castlegate\data\castlegate.qgs `
-            -Environment @{ SSL_CERT_FILE = 'C:\castlegate\tls\issuer.pem' }
+            -Environment @{ SSL_CERT_FILE = 'C:\castlegate\tls\issuer.pem'; QGIS_SERVER_LOG_LEVEL = '0' }
 
       - name: Check it through IIS
         run: node tests/iis/run.mjs C:\castlegate\tls\issuer.pfx castlegate-tests
@@ -103,7 +108,7 @@ jobs:
           ./install/iis/Install-Castlegate.ps1 -TenantId 9a9a9a9a-0000-4000-8000-000000000001 -ClientId c0c0c0c0-0000-4000-8000-0000000000c0 `
             -Scope access -Issuer https://localhost:8443/9a9a9a9a-0000-4000-8000-000000000001/v2.0 `
             -PluginZip build/castlegate_server-0.1.0.zip -DataFolder C:\castlegate\data -CheckMap C:\castlegate\data\castlegate.qgs `
-            -Environment @{ SSL_CERT_FILE = 'C:\castlegate\tls\issuer.pem' }
+            -Environment @{ SSL_CERT_FILE = 'C:\castlegate\tls\issuer.pem'; QGIS_SERVER_LOG_LEVEL = '0' }
 
       - name: Uninstall, and the existing server still answers
         # Windows PowerShell 5.1, as IT runs it: the WebAdministration module's IIS: drive needs it.

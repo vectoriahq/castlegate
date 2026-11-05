@@ -126,18 +126,27 @@ if ($PSCmdlet.ShouldProcess($Root, 'create the folder and unpack the plugin')) {
 
 # ---- OSGeo4W's environment ---------------------------------------------------------------
 
-# What o4w_env.bat adds or changes, as OSGeo4W's own Apache configuration has QGIS Server run with it.
+# What o4w_env.bat adds or changes, as OSGeo4W's own Apache configuration has QGIS Server run
+# with it. It runs from a clean start: Windows' own folders as PATH and no Python settings, so
+# nothing in this PowerShell window, such as another Python on its PATH, reaches the server.
+$windowsPath = @("$env:windir\system32", $env:windir, "$env:windir\System32\Wbem") -join ';'
 $before = @{}
 Get-ChildItem Env: | ForEach-Object { $before[$_.Name] = $_.Value }
 $o4w = @{}
-cmd /c "call `"$OSGeo4WRoot\bin\o4w_env.bat`" >nul 2>&1 && set" | ForEach-Object {
+cmd /c "set `"PATH=$windowsPath`"&& set PYTHONHOME=&& set PYTHONPATH=&& call `"$OSGeo4WRoot\bin\o4w_env.bat`" >nul 2>&1 && set" | ForEach-Object {
     $i = $_.IndexOf('=')
     if ($i -gt 0) { $o4w[$_.Substring(0, $i)] = $_.Substring($i + 1) }
 }
+if (-not $o4w['OSGEO4W_ROOT'] -or -not $o4w['PYTHONHOME']) {
+    Stop-Install "$OSGeo4WRoot\bin\o4w_env.bat did not set OSGEO4W_ROOT and PYTHONHOME; check the OSGeo4W install."
+}
 $vars = [ordered]@{}
 foreach ($k in ($o4w.Keys | Sort-Object)) {
-    if ($before[$k] -ne $o4w[$k] -and $k -notin 'PROMPT') { $vars[$k] = $o4w[$k] }
+    if ($before[$k] -ne $o4w[$k] -and $k -notin 'PROMPT', 'PATH') { $vars[$k] = $o4w[$k] }
 }
+# These two even where this window already has the same values, which IIS's own environment may not.
+$vars['OSGEO4W_ROOT'] = $o4w['OSGEO4W_ROOT']
+$vars['PYTHONHOME'] = $o4w['PYTHONHOME']
 $app = Join-Path $OSGeo4WRoot "apps\$QgisApp"
 $vars['PATH'] = "$app\bin;" + $o4w['PATH']
 $vars['QGIS_PREFIX_PATH'] = $app
