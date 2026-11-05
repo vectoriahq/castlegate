@@ -171,6 +171,8 @@ jobs:
           Import-Module WebAdministration
           if (Test-Path IIS:\AppPools\CastlegateUnsafeTest) { throw 'the refused install still created its pool' }
           'refused, and nothing was created'
+          # The refused install's exit code is what this step expects, not its own result.
+          exit 0
 
       - name: Uninstall, and the existing server still answers
         # Windows PowerShell 5.1, as IT runs it: the WebAdministration module's IIS: drive needs it.

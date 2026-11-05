@@ -191,6 +191,11 @@ if ($fullRoot.StartsWith($fullO4w, [StringComparison]::OrdinalIgnoreCase)) {
     Stop-Install "-Root is inside $OSGeo4WRoot. The plugin must never go under OSGeo4W, whose plugin folder every QGIS Server on this machine searches."
 }
 
+# The data folders the pool is to write.
+foreach ($folder in $DataFolder) {
+    if (-not (Test-Path $folder -PathType Container)) { Stop-Install "there is no folder at $folder; check -DataFolder." }
+}
+
 # The folders above $Root that exist already.
 Assert-Ancestors
 
@@ -393,7 +398,11 @@ if ($PSCmdlet.ShouldProcess((Join-Path $Root 'web.config'), "write the CORS rule
 if ($PSCmdlet.ShouldProcess($Root, "set the folder's rights: $identity may read it and write only its logs folder")) {
     # Again, so web.config and anything else written since follow the rule.
     Set-FolderRule
-    foreach ($folder in $DataFolder) { icacls $folder /grant "${identity}:(OI)(CI)M" | Out-Null; Say "$identity may write $folder" }
+    foreach ($folder in $DataFolder) {
+        icacls $folder /grant "${identity}:(OI)(CI)M" | Out-Null
+        if ($LASTEXITCODE -ne 0) { Stop-Install "could not let $identity write $folder." }
+        Say "$identity may write $folder"
+    }
     Say "only administrators and the system can change $Root; $identity reads it and writes only $Logs"
 }
 
