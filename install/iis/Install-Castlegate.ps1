@@ -14,7 +14,7 @@ Creates, or brings up to date on a second run:
 
 It changes nothing of an existing QGIS Server: no other pool, FastCGI entry, application or
 handler mapping, and not OSGeo4W's own plugin folder, which every QGIS Server on the machine
-searches. It recycles only Groundwork's pool. It ends with the status check.
+searches. It stops Groundwork's pool while it changes what the pool runs from, starts it once every change has succeeded, and touches no other pool. It ends with the status check.
 
 Run it in Windows PowerShell opened with "Run as administrator". -Uninstall removes what it
 created and leaves the folder.
@@ -277,22 +277,39 @@ if ($PSCmdlet.ShouldProcess($Pool, "create or update the application pool, runni
         Set-ItemProperty "IIS:\AppPools\$Pool" processModel.identityType -Value 4
     }
     Say "the pool runs as $identity"
+    # Stopped while anything it runs from changes, and started only once every change has
+    # succeeded: a QGIS Server process started in between could find no plugin or no plugin path
+    # and answer everyone. If this stops part-way, the pool stays stopped and IIS refuses
+    # Groundwork's requests until a run succeeds.
+    if ((Get-WebAppPoolState $Pool).Value -ne 'Stopped') {
+        Stop-WebAppPool $Pool
+        for ($i = 0; $i -lt 60 -and (Get-WebAppPoolState $Pool).Value -ne 'Stopped'; $i++) { Start-Sleep -Seconds 1 }
+        if ((Get-WebAppPoolState $Pool).Value -ne 'Stopped') { Stop-Install "the pool $Pool did not stop, so nothing was changed under it." }
+        Say "stopped $Pool while it is set up"
+    }
 }
 
 # ---- the folder and the plugin -----------------------------------------------------------
 
 if ($PSCmdlet.ShouldProcess($Root, "protect the folder and put Castlegate Server $version in it")) {
     Protect-Ancestors
-    # The pool keeps its read rights throughout, so a server already running here stays up.
     Set-FolderRule
-    # The new plugins folder is made beside the old one, then swapped in, so the plugins folder is
-    # replaced whole and nothing else in it survives to load beside Castlegate. Copied, not moved:
+    # The new plugins folder is made beside the old one, then the two are swapped by renaming, so
+    # the plugins folder is replaced whole and nothing else in it survives to load beside
+    # Castlegate. The old one is deleted only once the new one is in place. Copied, not moved:
     # a move within a drive keeps the temporary folder's rights, which only this user has.
-    $staging = Join-Path $Root ('plugins-' + [guid]::NewGuid())
+    $staging = Join-Path $Root ('plugins-new-' + [guid]::NewGuid())
     New-Item -ItemType Directory $staging | Out-Null
     Copy-Item $unpacked (Join-Path $staging 'castlegate_server') -Recurse
-    if (Test-Path $Plugins) { Remove-Item $Plugins -Recurse -Force }
+    $old = $null
+    if (Test-Path $Plugins) {
+        $old = Join-Path $Root ('plugins-old-' + [guid]::NewGuid())
+        Rename-Item $Plugins (Split-Path $old -Leaf)
+    }
     Rename-Item $staging (Split-Path $Plugins -Leaf)
+    if ($old) { Remove-Item $old -Recurse -Force -ErrorAction SilentlyContinue }
+    # Left-overs of an earlier run that stopped part-way.
+    Get-ChildItem $Root -Directory | Where-Object { $_.Name -like 'plugins-*' } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     Say "Castlegate Server $version is in $(Join-Path $Plugins 'castlegate_server')"
 }
 Remove-Item $unpack -Recurse -Force -ErrorAction SilentlyContinue
@@ -302,13 +319,21 @@ Remove-Item $unpack -Recurse -Force -ErrorAction SilentlyContinue
 if ($PSCmdlet.ShouldProcess("$Exe|$FastCgiArguments", 'create or replace the FastCGI entry')) {
     # IIS keys a FastCGI application by its program and arguments together, so this entry is
     # Groundwork's alone; an entry for the same program with other arguments is left as it is.
-    if (Get-WebConfiguration -PSPath $AppHost -Filter $FastCgiFilter) { Clear-WebConfiguration -PSPath $AppHost -Filter $FastCgiFilter }
-    Add-WebConfiguration -PSPath $AppHost -Filter 'system.webServer/fastCgi' -Value @{
-        fullPath = $Exe; arguments = $FastCgiArguments; maxInstances = 4
-        activityTimeout = 600; requestTimeout = 600; idleTimeout = 1800; instanceMaxRequests = 10000
-    }
-    foreach ($k in $vars.Keys) {
-        Add-WebConfiguration -PSPath $AppHost -Filter "$FastCgiFilter/environmentVariables" -Value @{ name = $k; value = [string]$vars[$k] }
+    # Saved to applicationHost.config as one change, so no reader sees the entry half rebuilt.
+    Start-WebCommitDelay
+    try {
+        if (Get-WebConfiguration -PSPath $AppHost -Filter $FastCgiFilter) { Clear-WebConfiguration -PSPath $AppHost -Filter $FastCgiFilter }
+        Add-WebConfiguration -PSPath $AppHost -Filter 'system.webServer/fastCgi' -Value @{
+            fullPath = $Exe; arguments = $FastCgiArguments; maxInstances = 4
+            activityTimeout = 600; requestTimeout = 600; idleTimeout = 1800; instanceMaxRequests = 10000
+        }
+        foreach ($k in $vars.Keys) {
+            Add-WebConfiguration -PSPath $AppHost -Filter "$FastCgiFilter/environmentVariables" -Value @{ name = $k; value = [string]$vars[$k] }
+        }
+        Stop-WebCommitDelay -Commit $true
+    } catch {
+        Stop-WebCommitDelay -Commit $false
+        Stop-Install "the FastCGI entry could not be written, and was left as it was: $($_.Exception.Message)"
     }
     Say "the FastCGI entry $Exe|$FastCgiArguments has $($vars.Count) environment variables"
 }
@@ -377,9 +402,10 @@ if ($PSCmdlet.ShouldProcess($Root, "set the folder's rights: $identity may read 
     Say "only administrators and the system can change $Root; $identity reads it and writes only $Logs"
 }
 
-if ($PSCmdlet.ShouldProcess($Pool, 'recycle the pool')) {
-    if ((Get-WebAppPoolState $Pool).Value -eq 'Started') { Restart-WebAppPool $Pool } else { Start-WebAppPool $Pool }
-    Say "recycled $Pool; no other pool was touched"
+if ($PSCmdlet.ShouldProcess($Pool, 'start the pool')) {
+    # Only now, with every change made: see the pool step.
+    Start-WebAppPool $Pool
+    Say "started $Pool; no other pool was touched"
 }
 
 $python = Join-Path $o4w['PYTHONHOME'] 'python.exe'

@@ -19,7 +19,7 @@ Default Web Site
 - **The application** `/groundwork/qgisserver`, with a handler mapping to that entry.
 - **The CORS rule** for `https://app.groundwork.do`: the browser's preflight answered, `WWW-Authenticate` exposed, other origins refused. It installs Microsoft's IIS CORS module first if the machine lacks it, after checking the download is signed by Microsoft.
 
-It changes nothing of an existing QGIS Server: no other pool, FastCGI entry, application or handler mapping. It never puts the plugin in OSGeo4W's own plugin folder, which every QGIS Server on the machine searches, and it stops if `-Root` is under OSGeo4W. It recycles only Groundwork's pool. Running it again brings everything up to date.
+It changes nothing of an existing QGIS Server: no other pool, FastCGI entry, application or handler mapping. It never puts the plugin in OSGeo4W's own plugin folder, which every QGIS Server on the machine searches, and it stops if `-Root` is under OSGeo4W. It stops Groundwork's pool while it changes what the pool runs from and starts it again once every change has succeeded, so a run that stops part-way leaves Groundwork's address refusing requests rather than serving without Castlegate; it touches no other pool. Running it again brings everything up to date.
 
 ## Before you run it
 
