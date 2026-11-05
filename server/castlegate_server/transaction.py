@@ -12,7 +12,8 @@ a refusal.
 - An Update or Delete names its layer in the `typeName` attribute; after a
   colon, the part after the first colon, as QGIS takes it.
 - An Update's fields are the text of every `Name` or `ValueReference` element
-  anywhere inside it. `geometry` is the feature's shape.
+  anywhere inside it, including the text of elements inside those, as
+  QDomElement::text() reads it. `geometry` is the feature's shape.
 - An Insert's layer is each feature element's local name, and its fields are
   the local names of that element's children, without `boundedBy` and
   `geometry`.
@@ -101,11 +102,15 @@ def read(body):
     for element in root:
         kind = _local(element.tag)
         if kind == "Update":
-            names = {
-                (child.text or "").strip()
-                for child in element.iter()
-                if _local(child.tag) in ("Name", "ValueReference")
-            }
+            names = set()
+            for child in element.iter():
+                if _local(child.tag) in ("Name", "ValueReference"):
+                    # QDomElement::text() joins the text of every descendant, so
+                    # <Name>sec<x/>ret</Name> names "secret". The text before the
+                    # first child is read as well, which can only add a name.
+                    names.add("".join(child.itertext()).strip())
+                    names.add((child.text or "").strip())
+            names.discard("")
             # QGIS matches the text as written; a prefixed form is read as both.
             names |= {n.split(":")[-1] for n in names}
             actions.append(

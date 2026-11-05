@@ -74,6 +74,15 @@ class ReadingWide(unittest.TestCase):
         )
         self.assertEqual(read(body)[0].fields, frozenset({"name", "secret", "status"}))
 
+    def test_a_name_split_by_an_element_is_read_whole(self):
+        # Review finding on #3: only the text before the inner element was read,
+        # while QGIS's QDomElement::text() reads "secret" and saves it.
+        for split in ("sec<x/>ret", "<x/>secret", "se<x>cr</x>et", "<![CDATA[sec]]>ret"):
+            body = tx('<wfs:Update typeName="assets"><wfs:Property><wfs:Name>%s</wfs:Name></wfs:Property></wfs:Update>' % split)
+            self.assertIn("secret", read(body)[0].fields, split)
+        body = tx('<wfs:Update typeName="assets"><wfs:Property><wfs:Name>geo<x/>metry</wfs:Name></wfs:Property></wfs:Update>')
+        self.assertTrue(read(body)[0].geometry)
+
     def test_a_prefixed_name_is_read_both_ways(self):
         self.assertEqual(read(tx(update("assets", "qgs:secret")))[0].fields, frozenset({"qgs:secret", "secret"}))
 

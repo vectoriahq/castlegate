@@ -404,6 +404,9 @@ async function checkSaves() {
   const hidden = await post("bob", update("assets", 2, { secret: "bob wrote this" }));
   record("field-hidden-refused", !succeeded(hidden) && (await feature("assets", 2)).properties.secret === "secret 1", `bob sets hidden "secret": status ${hidden.status}: ${short(hidden.text)}`);
   record("refusal-response", null, `what a client receives for a save the rules refuse: ${hidden.text.replace(/\s+/g, " ").slice(0, 400)}`);
+  // Review finding on #3: QGIS reads <Name>sec<x/>ret</Name> as "secret".
+  const split = await post("bob", update("assets", 2, { "sec<x/>ret": "split name" }));
+  record("field-hidden-split-name-refused", !succeeded(split) && (await feature("assets", 2)).properties.secret === "secret 1", `bob sets "sec<x/>ret": status ${split.status}: ${short(split.text)}`);
   const ro = await post("bob", update("assets", 2, { status: "closed" }));
   record("field-readonly-refused", !succeeded(ro) && (await feature("assets", 2)).properties.status === "open", `bob sets read-only "status": status ${ro.status}: ${short(ro.text)}`);
   const ok = await post("bob", update("assets", 2, { name: "bob renamed" }));
@@ -495,6 +498,9 @@ async function main() {
   await startServer({ plugin: false });
   const open = await gps(undefined);
   record("stock-serves-everyone", null, `with no plugin, a request with no token gets status ${open.status} and [${names(open.text).join(", ")}]`);
+  const stockSplit = await post(undefined, update("assets", 2, { "sec<x/>ret": "split name" }));
+  const afterSplit = (await getFeatures(undefined, "assets", { FEATUREID: "assets.2" })).json?.features?.[0]?.properties?.secret;
+  record("stock-reads-split-name", null, `with no plugin, an update naming "sec<x/>ret" ${succeeded(stockSplit) ? "succeeded" : "failed"} and secret is now "${afterSplit}"`);
 
   docker(["rm", "-f", "castlegate-server", "castlegate-issuer", "castlegate-mssql"], { allowFail: true });
   docker(["network", "rm", NET], { allowFail: true });
