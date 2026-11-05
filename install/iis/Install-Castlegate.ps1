@@ -63,6 +63,7 @@ $FastCgiArguments = 'gw'
 $HandlerName = 'CastlegateQgisServer'
 $Exe = Join-Path $OSGeo4WRoot "apps\$QgisApp\bin\qgis_mapserv.fcgi.exe"
 $Plugins = Join-Path $Root 'plugins'
+$Logs = Join-Path $Root 'logs'
 $AppHost = 'MACHINE/WEBROOT/APPHOST'
 $Location = "$Site$AppPath"
 $FastCgiFilter = "system.webServer/fastCgi/application[@fullPath='$Exe' and @arguments='$FastCgiArguments']"
@@ -85,17 +86,6 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     Stop-Install 'run this in PowerShell opened with "Run as administrator".'
 }
 Import-Module WebAdministration
-if (-not (Get-WebGlobalModule -Name FastCgiModule -ErrorAction SilentlyContinue)) {
-    Stop-Install "IIS has no FastCGI module. Add the CGI role service to IIS (Server Manager, Web Server, Application Development, CGI) and run this again."
-}
-if (-not (Test-Path $Exe)) {
-    Stop-Install "QGIS Server is not at $Exe. Install OSGeo4W's $QgisApp-server package, or pass -OSGeo4WRoot and -QgisApp."
-}
-$fullRoot = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
-$fullO4w = [IO.Path]::GetFullPath($OSGeo4WRoot).TrimEnd('\') + '\'
-if ($fullRoot.StartsWith($fullO4w, [StringComparison]::OrdinalIgnoreCase)) {
-    Stop-Install "-Root is inside $OSGeo4WRoot. The plugin must never go under OSGeo4W, whose plugin folder every QGIS Server on this machine searches."
-}
 
 # ---- uninstall ---------------------------------------------------------------------------
 
@@ -110,9 +100,73 @@ if ($Uninstall) {
     exit 0
 }
 
+# ---- checks an install needs ------------------------------------------------------------
+
+if (-not (Get-WebGlobalModule -Name FastCgiModule -ErrorAction SilentlyContinue)) {
+    Stop-Install "IIS has no FastCGI module. Add the CGI role service to IIS (Server Manager, Web Server, Application Development, CGI) and run this again."
+}
+if (-not (Test-Path $Exe)) {
+    Stop-Install "QGIS Server is not at $Exe. Install OSGeo4W's $QgisApp-server package, or pass -OSGeo4WRoot and -QgisApp."
+}
+$fullRoot = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+$fullO4w = [IO.Path]::GetFullPath($OSGeo4WRoot).TrimEnd('\') + '\'
+if ($fullRoot.StartsWith($fullO4w, [StringComparison]::OrdinalIgnoreCase)) {
+    Stop-Install "-Root is inside $OSGeo4WRoot. The plugin must never go under OSGeo4W, whose plugin folder every QGIS Server on this machine searches."
+}
+
+# ---- the folder rule ---------------------------------------------------------------------
+
+# Only administrators and the system can change anything in $Root, and $Plugins holds
+# Castlegate Server alone. Everything below that changes the folder goes through these two.
+$Admins = '*S-1-5-32-544'
+$System = '*S-1-5-18'
+# Administrators, the system, TrustedInstaller, and whoever is running this as administrator.
+$TrustedOwners = 'S-1-5-32-544', 'S-1-5-18', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464',
+    [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+
+function Assert-SafeAncestors {
+    # Whoever owns a folder above $Root can rename $Root away and put another in its place.
+    $parent = Split-Path ([IO.Path]::GetFullPath($Root)) -Parent
+    while ($parent -and (Split-Path $parent -Parent)) {
+        if (Test-Path $parent) {
+            $owner = (Get-Acl $parent).GetOwner([Security.Principal.SecurityIdentifier]).Value
+            if ($owner -notin $TrustedOwners) {
+                Stop-Install "$parent is owned by $((New-Object Security.Principal.SecurityIdentifier $owner).Translate([Security.Principal.NTAccount])), not by administrators, so they could replace $Root. Give it to administrators (icacls `"$parent`" /setowner *S-1-5-32-544) or pass another -Root."
+            }
+        }
+        $parent = Split-Path $parent -Parent
+    }
+}
+
+function Set-FolderRule([switch]$WithPool) {
+    # Folders this creates above $Root go to administrators too, so a later run finds them trusted.
+    $missing = @()
+    $parent = Split-Path ([IO.Path]::GetFullPath($Root)) -Parent
+    while ($parent -and (Split-Path $parent -Parent)) {
+        if (-not (Test-Path $parent)) { $missing += $parent }
+        $parent = Split-Path $parent -Parent
+    }
+    # An owner can always rewrite a folder's rights, so administrators own everything first.
+    New-Item -ItemType Directory -Force $Root | Out-Null
+    if ($WithPool) { New-Item -ItemType Directory -Force $Logs | Out-Null }
+    foreach ($folder in $missing) { icacls $folder /setowner $Admins /C /Q | Out-Null }
+    icacls $Root /setowner $Admins /T /C /Q | Out-Null
+    # Everything inside then takes its rights from $Root alone, and $Root gets exactly these.
+    icacls $Root /reset /T /C /Q | Out-Null
+    $grants = @("${Admins}:(OI)(CI)F", "${System}:(OI)(CI)F")
+    if ($WithPool) { $grants += "${identity}:(OI)(CI)RX" }
+    icacls $Root /inheritance:r /grant:r @grants | Out-Null
+    if ($LASTEXITCODE -ne 0) { Stop-Install "could not set the rights on $Root." }
+    if ($WithPool) { icacls $Logs /grant:r "${identity}:(OI)(CI)M" | Out-Null }
+}
+
 # ---- the folder and the plugin -----------------------------------------------------------
 
 if ($PSCmdlet.ShouldProcess($Root, 'create the folder and unpack the plugin')) {
+    Assert-SafeAncestors
+    Set-FolderRule
+    # The plugins folder is replaced whole, so nothing else in it survives to load beside Castlegate.
+    if (Test-Path $Plugins) { Remove-Item $Plugins -Recurse -Force }
     New-Item -ItemType Directory -Force $Plugins | Out-Null
     $unpack = Join-Path ([IO.Path]::GetTempPath()) ("castlegate-" + [guid]::NewGuid())
     Expand-Archive -Path $PluginZip -DestinationPath $unpack
@@ -121,7 +175,6 @@ if ($PSCmdlet.ShouldProcess($Root, 'create the folder and unpack the plugin')) {
         Stop-Install "$PluginZip does not hold castlegate_server\metadata.txt; pass the release zip."
     }
     $target = Join-Path $Plugins 'castlegate_server'
-    if (Test-Path $target) { Remove-Item $target -Recurse -Force }
     # Copied, not moved: a move within a drive keeps the temporary folder's rights, which only
     # this user has, so QGIS Server's account could not see the plugin.
     Copy-Item (Join-Path $unpack 'castlegate_server') $target -Recurse
@@ -162,7 +215,6 @@ $vars['QT_PLUGIN_PATH'] = $qt -join ';'
 $vars['PYTHONPATH'] = "$app\python;" + $o4w['PYTHONPATH']
 $vars['TEMP'] = Join-Path $env:windir 'TEMP'
 $vars['QGIS_PLUGINPATH'] = $Plugins
-$Logs = Join-Path $Root 'logs'
 $vars['QGIS_SERVER_LOG_FILE'] = Join-Path $Logs 'qgis_server.log'
 # Warning keeps the plugin's audit lines, which it writes at Warning.
 $vars['QGIS_SERVER_LOG_LEVEL'] = '1'
@@ -281,19 +333,9 @@ if ($PSCmdlet.ShouldProcess((Join-Path $Root 'web.config'), "write the CORS rule
 # ---- rights, restart, check --------------------------------------------------------------
 
 if ($PSCmdlet.ShouldProcess($Root, "set the folder's rights: $identity may read it and write only its logs folder")) {
-    # The folder does not inherit from the drive, whose rights let any local user add files: the
-    # process that answers requests must not be able to change or add to the plugin, or widen the
-    # CORS rule in web.config. So it has exactly these, replacing whatever was there:
-    # administrators and the system in full, the pool's account read, and write in logs\ alone.
-    New-Item -ItemType Directory -Force $Logs | Out-Null
-    $grants = @('*S-1-5-32-544:(OI)(CI)F', '*S-1-5-18:(OI)(CI)F', "${identity}:(OI)(CI)RX")
-    # Everything inside takes its rights from the folder alone, then the folder gets its own.
-    icacls $Root /reset /T /C /Q | Out-Null
-    icacls $Root /inheritance:r /grant:r @grants | Out-Null
-    if ($LASTEXITCODE -ne 0) { Stop-Install "could not set the rights on $Root." }
-    icacls $Logs /grant:r "${identity}:(OI)(CI)M" | Out-Null
+    Set-FolderRule -WithPool
     foreach ($folder in $DataFolder) { icacls $folder /grant "${identity}:(OI)(CI)M" | Out-Null; Say "$identity may write $folder" }
-    Say "$identity may read $Root and write only $Logs"
+    Say "only administrators and the system can change $Root; $identity reads it and writes only $Logs"
 }
 
 if ($PSCmdlet.ShouldProcess($Pool, 'recycle the pool')) {

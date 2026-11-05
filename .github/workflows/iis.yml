@@ -80,6 +80,14 @@ jobs:
           ./tests/iis/New-ExistingServer.ps1
           ./tests/iis/Get-ExistingServer.ps1 | Set-Content C:\castlegate\existing-before.txt
 
+      - name: Plant a stray plugin where the install will go
+        shell: powershell
+        run: |
+          # The install must replace the plugins folder whole, so this must not survive it.
+          New-Item -ItemType Directory -Force C:\Groundwork\IIS\QgisServer\plugins\planted | Out-Null
+          Set-Content C:\Groundwork\IIS\QgisServer\plugins\planted\__init__.py 'def serverClassFactory(iface): raise SystemExit'
+          Set-Content C:\Groundwork\IIS\QgisServer\plugins\planted\metadata.txt "[general]`nname=planted`nserver=True`nversion=1"
+
       - name: Install Castlegate Server
         # Windows PowerShell 5.1, as IT runs it: the WebAdministration module's IIS: drive needs it.
         shell: powershell
@@ -89,7 +97,7 @@ jobs:
             -PluginZip build/castlegate_server-0.1.0.zip -DataFolder C:\castlegate\data -CheckMap C:\castlegate\data\castlegate.qgs `
             -Environment @{ SSL_CERT_FILE = 'C:\castlegate\tls\issuer.pem'; QGIS_SERVER_LOG_LEVEL = '0' }
 
-      - name: Check no one but administrators can change the plugin or its CORS rule
+      - name: Check no one but administrators can own or change the folder, the plugin or its CORS rule
         shell: powershell
         run: |
           # Only the flags that let someone change something: Modify and FullControl also carry the read flags.
@@ -101,9 +109,16 @@ jobs:
             "$path : writable by $(@($writers | ForEach-Object { $_.IdentityReference.Value }) -join ', ')"
             if ($writers) { throw "$path can be changed by someone other than administrators" }
           }
+          foreach ($path in $root, "$root\plugins", "$root\plugins\castlegate_server", "$root\plugins\castlegate_server\plugin.py", "$root\web.config", "$root\logs") {
+            # An owner can always rewrite the rights, so the owner must be trusted too.
+            $owner = (Get-Acl $path).Owner
+            "$path : owned by $owner"
+            if ($owner -notin $trusted) { throw "$path is owned by $owner" }
+          }
+          if (Test-Path "$root\plugins\planted") { throw 'the stray plugin planted before the install is still there' }
           $logs = (Get-Acl "$root\logs").Access | Where-Object { $_.IdentityReference.Value -eq 'IIS AppPool\GroundworkQgisServer' -and ($_.FileSystemRights -band $write) }
           if (-not $logs) { throw 'the pool cannot write its log folder' }
-          'only administrators and the system can change the folder; the pool writes logs\ alone'
+          'only administrators and the system own or can change the folder; the pool writes logs\ alone; the stray plugin is gone'
 
       - name: Check it through IIS
         run: node tests/iis/run.mjs C:\castlegate\tls\issuer.pfx castlegate-tests
