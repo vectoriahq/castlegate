@@ -17,7 +17,8 @@ from .rsa import InvalidKey, verify_rs256
 LEEWAY_SECONDS = 60
 MAX_TOKEN_BYTES = 16 * 1024
 
-_B64URL = re.compile(r"^[A-Za-z0-9_-]*$")
+# \Z, not $: $ also matches before a trailing newline.
+_B64URL = re.compile(r"[A-Za-z0-9_-]*\Z")
 
 
 class TokenError(Exception):
@@ -35,10 +36,13 @@ class Person:
 
 
 def b64url_decode(text):
-    """Strict base64url without padding, as JSON Web Tokens use."""
+    """Strict base64url without padding, as JSON Web Tokens use. Raises only TokenError."""
     if not isinstance(text, str) or not _B64URL.match(text) or len(text) % 4 == 1:
         raise TokenError("the token is malformed")
-    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    try:
+        return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    except ValueError:
+        raise TokenError("the token is malformed")
 
 
 def _no_duplicates(pairs):

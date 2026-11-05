@@ -171,6 +171,14 @@ class Refused(unittest.TestCase):
         self.refused(b64url(b"[1]") + "." + p + "." + s, "malformed")
         self.refused(h + "." + b64url(b"not json") + "." + s, "malformed")
 
+    def test_base64url_is_strict(self):
+        from core.tokens import b64url_decode
+
+        for bad in ("abc\n", "AQABAQ\n", "ab=c", "ab+c", "ab/c", "abcde", "ab c", 7, None):
+            with self.assertRaises(TokenError):
+                b64url_decode(bad)
+        self.assertEqual(b64url_decode("AQAB"), b"\x01\x00\x01")
+
     def test_a_huge_token(self):
         self.refused(token(claims(pad="x" * 20000)), "too large")
 

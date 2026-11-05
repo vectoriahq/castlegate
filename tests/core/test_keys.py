@@ -104,6 +104,11 @@ class KeySetTests(unittest.TestCase):
             dict(k.jwk(), kid="ps", alg="PS256"),
             dict(k.jwk(), kid="ec", kty="EC"),
             dict(k.jwk(), kid="bad", n="!!"),
+            # Review finding on #1: a trailing newline passed the pattern and
+            # raised a non-TokenError, losing every key in the set.
+            dict(k.jwk(), kid="newline-n", n=k.jwk()["n"] + "\n"),
+            dict(k.jwk(), kid="newline-e", e="AQAB\n"),
+            dict(k.jwk(), kid="number", n=12345),
             dict(short.jwk(), kid="short"),
             {"kty": "RSA", "kid": "partial"},
             "not a key",

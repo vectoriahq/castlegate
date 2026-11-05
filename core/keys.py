@@ -10,7 +10,7 @@ import json
 import time
 import urllib.request
 
-from .rsa import InvalidKey, check_public_key
+from .rsa import check_public_key
 from .tokens import TokenError, b64url_decode
 
 MAX_AGE_SECONDS = 24 * 60 * 60
@@ -96,6 +96,7 @@ def _rsa_key(jwk):
         n = int.from_bytes(b64url_decode(jwk["n"]), "big")
         e = int.from_bytes(b64url_decode(jwk["e"]), "big")
         check_public_key(n, e)
-    except (KeyError, TypeError, TokenError, InvalidKey):
+    except Exception:
+        # Whatever is wrong with one key, the rest of the set is still used.
         return None
     return n, e
