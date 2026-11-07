@@ -19,7 +19,8 @@ Castlegate Server decides, for each signed-in person, which layers, features and
 QGIS Server runs a request's own filter or sort without asking Castlegate about it, so Castlegate checks each one first. A refused request is answered 403 with no reason; the reason goes to the server log.
 
 - **A filter or sort that names a field hidden from the person, by its name or its alias, is refused,** whichever layer of the project hides it. So a field hidden on one layer cannot be filtered on in another layer that has a field of the same name. This covers WFS `EXP_FILTER`, `FILTER` and `SORTBY`, a request sent as XML, and WMS `FILTER`.
-- **A WMS condition that mentions a hidden field's name anywhere is refused,** even as a quoted value, such as `"name" = 'secret'` where `secret` is a hidden field.
+- **WMS `FILTER` may hold only OGC filters.** A `layer:condition` item is refused, whatever it names, because QGIS Server hands the condition to the database as SQL, which Castlegate cannot read as the database will.
+- **A request body QGIS Server may read as XML must be one Castlegate can read,** or it is refused. Castlegate reads UTF-8 and UTF-16, so a body in UTF-32 is refused.
 - **A filter may use only a short list of functions:** those for comparisons, shapes and feature identifiers, and a few that change text or numbers. Other QGIS functions can read other layers or evaluate text as an expression, so a filter using one is refused, and so is a filter using a variable. The list is `FUNCTIONS` in `server/castlegate_server/request_expressions.py`.
 - **A style sent with a WMS request is refused,** in `SLD` or `SLD_BODY`, because a style can label features with any field.
 

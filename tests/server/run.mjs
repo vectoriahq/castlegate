@@ -355,14 +355,25 @@ async function checkFilters() {
   const getFeatureBody = (inner) => `<wfs:GetFeature service="WFS" version="1.1.0" outputFormat="application/vnd.geo+json" xmlns:wfs="http://www.opengis.net/wfs" xmlns:ogc="http://www.opengis.net/ogc"><wfs:Query typeName="assets">${inner}</wfs:Query></wfs:GetFeature>`;
   const bodyHidden = await req({ SERVICE: "WFS" }, { who: "bob", body: getFeatureBody(ogc(equal("secret", "secret 1"))) });
   record("body-filter-hidden-field-refused", !(bodyHidden.status === 200 && /"features"\s*:\s*\[\s*\{/.test(bodyHidden.text)), `bob's GetFeature body filtering on "secret": status ${bodyHidden.status}: ${short(bodyHidden.text)}`);
+  // Review finding on #7: Qt reads UTF-16BE with no byte order mark as XML, and the plugin skipped it.
+  const utf16 = (text) => Buffer.from(text, "utf16le").swap16();
+  const bodyUtf16 = await req({ SERVICE: "WFS", REQUEST: "GetFeature" }, { who: "bob", body: utf16(getFeatureBody(ogc(equal("secret", "secret 1")))) });
+  record("body-utf16-hidden-field-refused", !(bodyUtf16.status === 200 && /"features"\s*:\s*\[\s*\{/.test(bodyUtf16.text)), `bob's UTF-16BE GetFeature body filtering on "secret": status ${bodyUtf16.status}: ${short(bodyUtf16.text)}`);
+  // QGIS reads that body for alice, who may see "secret", so the refusal above is not for an unreadable body.
+  const aliceUtf16 = await req({ SERVICE: "WFS", REQUEST: "GetFeature" }, { who: "alice", body: utf16(getFeatureBody(ogc(equal("secret", "secret 0")))) });
+  record("body-utf16-read-by-qgis", aliceUtf16.status === 200 && /secret 0/.test(aliceUtf16.text), `alice's UTF-16BE GetFeature body filtering on "secret": status ${aliceUtf16.status}: ${short(aliceUtf16.text)}`);
   const bodyVisible = await req({ SERVICE: "WFS" }, { who: "bob", body: getFeatureBody(ogc(equal("name", "asset 1"))) });
   record("body-filter-visible-field-allowed", bodyVisible.status === 200 && /asset 1/.test(bodyVisible.text), `bob's GetFeature body filtering on "name": status ${bodyVisible.status}: ${short(bodyVisible.text)}`);
   const featureInfo = (who, filter) => req({ SERVICE: "WMS", VERSION: "1.3.0", REQUEST: "GetFeatureInfo", LAYERS: "assets", QUERY_LAYERS: "assets", INFO_FORMAT: "application/json", FILTER: filter, FEATURE_COUNT: "50", CRS: "EPSG:4326", WIDTH: "10", HEIGHT: "10", BBOX: "-90,-180,90,180" }, { who });
   const infoCount = (r) => { try { return r.status === 200 ? JSON.parse(r.text).features?.length : undefined; } catch { return undefined; } };
   const wmsHidden = await featureInfo("bob", `assets:"secret" = 'secret 1'`);
   record("wms-filter-hidden-field-refused", infoCount(wmsHidden) === undefined, `bob's WMS FILTER on "secret": status ${wmsHidden.status}: ${short(wmsHidden.text)}`);
-  const wmsVisible = await featureInfo("bob", `assets:"name" = 'asset 1'`);
-  record("wms-filter-visible-field-allowed", infoCount(wmsVisible) === 1, `bob's WMS FILTER on "name": status ${wmsVisible.status}, ${infoCount(wmsVisible) ?? short(wmsVisible.text)} features`);
+  const wmsVisible = await featureInfo("bob", `(${ogc(equal("name", "asset 1"))})`);
+  record("wms-filter-visible-field-allowed", infoCount(wmsVisible) === 1, `bob's WMS OGC FILTER on "name": status ${wmsVisible.status}, ${infoCount(wmsVisible) ?? short(wmsVisible.text)} features`);
+  // Review finding on #7: a layer:condition is SQL for the database, which can read a hidden
+  // column without its name being written, so a condition is refused whatever it names.
+  const wmsCondition = await featureInfo("bob", `assets:"name" = 'asset 1'`);
+  record("wms-filter-condition-refused", infoCount(wmsCondition) === undefined, `bob's WMS FILTER condition on "name": status ${wmsCondition.status}: ${short(wmsCondition.text)}`);
   const sld = `<StyledLayerDescriptor version="1.0.0" xmlns="http://www.opengis.net/sld"><NamedLayer><Name>assets</Name><UserStyle><FeatureTypeStyle><Rule><TextSymbolizer><Label><PropertyName xmlns="http://www.opengis.net/ogc">secret</PropertyName></Label></TextSymbolizer></Rule></FeatureTypeStyle></UserStyle></NamedLayer></StyledLayerDescriptor>`;
   const styled = await req({ SERVICE: "WMS", VERSION: "1.3.0", REQUEST: "GetMap", LAYERS: "assets", STYLES: "", CRS: "EPSG:4326", BBOX: "-38,144,-37,146", WIDTH: "64", HEIGHT: "64", FORMAT: "image/png", SLD_BODY: sld }, { who: "bob" });
   record("wms-style-in-request-refused", !(styled.status === 200 && /image\/png/.test(styled.headers?.get?.("content-type") ?? "")), `bob's GetMap with a style labelling "secret": status ${styled.status}: ${short(styled.text)}`);

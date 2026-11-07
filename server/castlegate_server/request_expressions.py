@@ -15,17 +15,20 @@ What is read, following QGIS Server's own readers:
 - WFS `SORTBY`: a list split like QgsWfsParameter::toStringListWithExp, each
   item split at `,` with its order suffix taken off: the expression QGIS
   orders by (qgswfsgetfeature.cpp).
-- WFS `FILTER` and WMS `FILTER`: OGC filters, and for WMS also
-  `layer:condition` items, whose condition is SQL that QGIS hands to the data
-  provider after its own token check (QgsWmsParameters::layerFilters).
-- An XML body.
+- WFS `FILTER` and WMS `FILTER`: OGC filters. A WMS `layer:condition` item
+  is refused: QGIS hands its condition to the data provider as SQL
+  (QgsWmsParameters::layerFilters, setSubsetString), which the plugin cannot
+  read as the database will.
+- A body QGIS may read as XML (may_be_xml).
 - WMS `SLD` and `SLD_BODY`: refused whatever they hold, because a style sent
   with the request can label features with any field.
 
 An OGC filter or XML body is read for every `PropertyName` and
 `ValueReference` in it, wherever it stands, and every `Function`. That reads
-more than QGIS acts on, which can only refuse more. A part that looks like XML
-but is not well-formed is refused.
+more than QGIS acts on, which can only refuse more.
+
+The condition the module holds to: every filter, sort and body QGIS Server
+may read is read here as QGIS will read it, and one that cannot be is refused.
 
 The splitting and the XML reading are plain Python, tested without QGIS;
 checking an expression uses QGIS's own parser.
@@ -122,11 +125,25 @@ def sort_expressions(value):
     return found
 
 
-def looks_like_xml(text):
-    """Whether a value or body starts, after white space or a byte order mark, with <, or is UTF-16."""
+_BYTE_ORDER_MARKS = (b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff", b"\x00\x00\xfe\xff", b"\xff\xfe\x00\x00")
+
+
+def may_be_xml(text):
+    """Whether QGIS may read a value or body as XML.
+
+    A value: it starts with <, after white space or a byte order mark. A body:
+    the same, or it starts with a byte order mark, or it holds a zero byte. Qt
+    works out a body's encoding from its first bytes, so UTF-16 or UTF-32
+    without a byte order mark is XML to it; neither can be form data.
+    """
     if isinstance(text, str):
-        return text.lstrip("﻿ \t\r\n").startswith("<")
-    return text.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"<") or text.startswith((b"\xff\xfe", b"\xfe\xff"))
+        return text.lstrip("\ufeff \t\r\n").startswith("<")
+    data = bytes(text)
+    return (
+        data.startswith(_BYTE_ORDER_MARKS)
+        or b"\x00" in data
+        or data.lstrip(b" \t\r\n").startswith(b"<")
+    )
 
 
 def xml_parts(text, where="a filter"):
@@ -151,19 +168,20 @@ def xml_parts(text, where="a filter"):
 
 
 def wms_filters(value):
-    """(OGC filters, SQL conditions) of a WMS FILTER value, read as QgsWmsParameters::layerFilters reads it.
+    """(OGC filters, other parts) of a WMS FILTER value, split as QgsWmsParameters::layerFilters splits it.
 
-    A part shaped like an OGC filter is read as one, and also as SQL where it
-    holds a colon, because QGIS reads it as SQL when the request names fewer
-    layers than filters.
+    QGIS reads an OGC-shaped part as SQL when the request names fewer layers
+    than filters. Such a part's last token ends in Filter>, which QGIS's own
+    token check (QgsRenderer::testFilterStringSafety) refuses, so it is never
+    run as SQL.
     """
-    ogc, sql = [], []
+    ogc, other = [], []
     for part in ogc_filter_list(value) or semicolon_list(value):
         if part.startswith("<") and part.endswith("Filter>"):
             ogc.append(part)
-        if ":" in part:
-            sql.append(part.split(":", 1)[1])
-    return ogc, sql
+        elif part:
+            other.append(part)
+    return ogc, other
 
 
 def name_forms(name):
@@ -175,18 +193,6 @@ def named_fields(words, hidden):
     """The hidden fields any of words names, without case, as QGIS looks a field up."""
     folded = {w.casefold() for word in words for w in name_forms(word.strip())}
     return sorted(name for name in hidden if name.casefold() in folded)
-
-
-def sql_names(condition, hidden):
-    """The hidden fields a WMS SQL condition names, matched without case wherever the name stands alone.
-
-    This reads more than SQL would, a quoted value equal to a field's name
-    included, which can only refuse more.
-    """
-    folded = condition.casefold()
-    return sorted(
-        name for name in hidden if re.search(r"(?<![\w])%s(?![\w])" % re.escape(name.casefold()), folded)
-    )
 
 
 def check_xml(text, hidden, where, check_expression):
@@ -217,21 +223,19 @@ def refusal(service, params, body, hidden, check_expression):
             for text in sort_expressions(params.get("SORTBY", "")):
                 check_expression(text, hidden, "SORTBY", must_parse=True)
             for text in groups(params.get("FILTER", "")):
-                if looks_like_xml(text):
+                if may_be_xml(text):
                     check_xml(text, hidden, "FILTER", check_expression)
                 elif text.strip():
                     raise Refused("FILTER is not an OGC filter")
         elif service == "WMS":
             if params.get("SLD") or params.get("SLD_BODY"):
                 raise Refused("a style sent with the request is not accepted")
-            ogc, sql = wms_filters(params.get("FILTER", ""))
+            ogc, other = wms_filters(params.get("FILTER", ""))
+            if other:
+                raise Refused("FILTER may hold only OGC filters, not a condition")
             for text in ogc:
                 check_xml(text, hidden, "FILTER", check_expression)
-            for condition in sql:
-                named = sql_names(condition, hidden)
-                if named:
-                    raise Refused("FILTER names %s, which you may not see" % ", ".join(named))
-        if body and looks_like_xml(body):
+        if body and may_be_xml(body):
             check_xml(body, hidden, "the request body", check_expression)
     except Refused as e:
         return str(e)

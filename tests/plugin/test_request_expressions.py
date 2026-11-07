@@ -58,14 +58,10 @@ class Splitting(unittest.TestCase):
         self.assertEqual(rx.ogc_filter_list("<Filter>a</Filter>"), ["<Filter>a</Filter>"])
         self.assertEqual(rx.ogc_filter_list('assets:"a" = 1'), [])
 
-    def test_wms_sql_conditions(self):
-        self.assertEqual(rx.wms_filters('assets:"a" = 1;notes,more:"b" = 2'), ([], ['"a" = 1', '"b" = 2']))
-
-    def test_a_wms_ogc_filter_with_a_colon_is_read_as_sql_too(self):
+    def test_wms_conditions_are_kept_apart_from_ogc_filters(self):
+        self.assertEqual(rx.wms_filters('assets:"a" = 1;notes,more:"b" = 2'), ([], ['assets:"a" = 1', 'notes,more:"b" = 2']))
         ogc_part = ogc(equal("name"))
-        found_ogc, found_sql = rx.wms_filters("(%s)" % ogc_part)
-        self.assertEqual(found_ogc, [ogc_part])
-        self.assertEqual(len(found_sql), 1)
+        self.assertEqual(rx.wms_filters("(%s)" % ogc_part), ([ogc_part], []))
 
 
 class Names(unittest.TestCase):
@@ -73,11 +69,6 @@ class Names(unittest.TestCase):
         for name in ("secret", "SECRET", "qgs:secret", "qgs:assets/qgs:secret", " secret "):
             self.assertEqual(rx.named_fields({name}, HIDDEN), ["secret"], name)
         self.assertEqual(rx.named_fields({"secrets", "name"}, HIDDEN), [])
-
-    def test_sql_names_a_field_wherever_it_stands_alone(self):
-        self.assertEqual(rx.sql_names('"Secret" = 1', HIDDEN), ["secret"])
-        self.assertEqual(rx.sql_names("secret IS NULL", HIDDEN), ["secret"])
-        self.assertEqual(rx.sql_names('"secrets" = 1 AND "my_secret" = 2', HIDDEN), [])
 
 
 class Refusals(unittest.TestCase):
@@ -116,10 +107,15 @@ class Refusals(unittest.TestCase):
         self.assertEqual(refusal("WFS", {"FILTER": ogc(bbox)}), "")
         self.assertEqual(refusal("WFS", {"FILTER": ogc('<ogc:FeatureId fid="assets.2"/>')}), "")
 
-    def test_wms_filters(self):
-        self.assertIn("secret", refusal("WMS", {"FILTER": 'assets:"secret" = \'x\''}))
+    def test_wms_ogc_filters_are_checked(self):
         self.assertIn("secret", refusal("WMS", {"FILTER": "(%s)" % ogc(equal("secret"))}))
-        self.assertEqual(refusal("WMS", {"FILTER": 'assets:"name" = \'x\''}), "")
+        self.assertEqual(refusal("WMS", {"FILTER": "(%s)" % ogc(equal("name"))}), "")
+
+    def test_a_wms_condition_is_refused_whatever_it_names(self):
+        # Review finding on #7: a condition is SQL for the database, so to_jsonb("assets")
+        # read the hidden column without writing its name.
+        for condition in ('assets:"name" = \'x\'', 'assets:"id"="id"and(to_jsonb("assets")->>(\'sec\'||\'ret\'))=\'x\''):
+            self.assertIn("only OGC filters", refusal("WMS", {"FILTER": condition}, hidden=frozenset()), condition)
 
     def test_a_style_sent_with_a_wms_request_is_refused(self):
         self.assertIn("style", refusal("WMS", {"SLD_BODY": "<StyledLayerDescriptor/>"}, hidden=frozenset()))
@@ -131,6 +127,16 @@ class Refusals(unittest.TestCase):
         sort = '<ogc:SortBy %s><ogc:SortProperty><ogc:PropertyName>secret</ogc:PropertyName></ogc:SortProperty></ogc:SortBy>' % OGC
         self.assertIn("secret", refusal("WFS", {}, (get_feature % sort).encode()))
         self.assertEqual(refusal("WFS", {}, (get_feature % ogc(equal("name"))).encode()), "")
+
+    def test_a_body_in_utf_16_or_utf_32_without_a_byte_order_mark_is_read(self):
+        # Review finding on #7: a UTF-16BE body with no byte order mark starts 00 3C, which
+        # Qt reads as XML, and was skipped unread.
+        body = '<GetFeature><Query typeName="assets">%s</Query></GetFeature>' % ogc(equal("secret"))
+        for encoding in ("utf-16-be", "utf-16-le"):
+            self.assertIn("secret", refusal("WFS", {}, body.encode(encoding)), encoding)
+        # The plugin's parser cannot read UTF-32, so such a body is refused, whatever it names.
+        for encoding in ("utf-32-be", "utf-32-le", "utf-32"):
+            self.assertIn("not well-formed", refusal("WFS", {}, body.replace("secret", "name").encode(encoding)), encoding)
 
     def test_a_body_that_is_not_xml_is_left_to_qgis(self):
         self.assertEqual(refusal("WFS", {}, b"SERVICE=WFS&REQUEST=GetFeature"), "")
