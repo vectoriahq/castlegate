@@ -1,9 +1,10 @@
 """From an Authorization header to a person and their groups.
 
 Every check the design names is made here: the RS256 signature by key id, the
-issuer, the audience, the tenant when one is set, the expiry and not-before
-times, the scope, and the groups overage marker. Anything that fails raises
-TokenError, whose message says why and is safe to show the person.
+issuer, the audience, the tenant when one is set, the expiry time, the
+not-before time when the token has one, the scope, and the groups overage
+marker. Anything that fails raises TokenError, whose message says why and is
+safe to show the person.
 """
 
 import base64
@@ -19,19 +20,40 @@ MAX_TOKEN_BYTES = 16 * 1024
 
 # \Z, not $: $ also matches before a trailing newline.
 _B64URL = re.compile(r"[A-Za-z0-9_-]*\Z")
+_GUID = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\Z")
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 
 class TokenError(Exception):
     pass
 
 
+def normal_email(text):
+    """An email as rows and tokens are compared: trimmed, with A to Z lower-cased and nothing else changed.
+
+    str.lower() would also map some other letters onto A to Z, such as the Kelvin
+    sign onto k, so that one address could pass for another.
+    """
+    return text.strip().translate(_ASCII_LOWER)
+
+
+def normal_id(text):
+    """An id as rows and tokens are compared: a GUID in lower case, anything else exactly as written.
+
+    Entra's object IDs are GUIDs, which compare without case. Other providers'
+    ids, such as an OpenID Connect `sub`, are case-sensitive.
+    """
+    text = text.strip()
+    return text.lower() if _GUID.match(text) else text
+
+
 @dataclass(frozen=True)
 class Person:
-    # The provider's immutable id for the person: Entra's object ID by default.
+    # The provider's immutable id for the person, Entra's object ID by default, as normal_id gives it.
     id: str
-    # Lower case. Empty when the token carries no email claim.
+    # As normal_email gives it. Empty when the token carries no email claim.
     email: str
-    # Group object IDs, lower case.
+    # Group ids, as normal_id gives them.
     groups: frozenset
 
 
@@ -40,9 +62,14 @@ def b64url_decode(text):
     if not isinstance(text, str) or not _B64URL.match(text) or len(text) % 4 == 1:
         raise TokenError("the token is malformed")
     try:
-        return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+        decoded = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
     except ValueError:
         raise TokenError("the token is malformed")
+    # The last character can carry bits the decoder drops, so one value has
+    # several spellings; only the one the encoder writes is accepted.
+    if base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii") != text:
+        raise TokenError("the token is malformed")
+    return decoded
 
 
 def _no_duplicates(pairs):
@@ -138,4 +165,4 @@ def verify(authorization, settings, keyset, now=time.time):
     groups = claims.get(settings.groups_claim, [])
     if not isinstance(groups, list) or not all(isinstance(g, str) for g in groups):
         raise TokenError("the token's %s claim is not a list of ids" % settings.groups_claim)
-    return Person(id=person_id.lower(), email=email.strip().lower(), groups=frozenset(g.lower() for g in groups))
+    return Person(id=normal_id(person_id), email=normal_email(email), groups=frozenset(normal_id(g) for g in groups))

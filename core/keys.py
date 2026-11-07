@@ -4,6 +4,11 @@ Each worker process keeps its own copy. Keys are fetched on first use, again
 when they are a day old, and again when a token names a key id the copy lacks,
 but never more than once a minute: a stream of tokens naming made-up key ids
 would otherwise make every request fetch from the issuer.
+
+A failed fetch keeps the keys already held, for up to a week from the last
+fetch that worked. After that the copy is dropped and every sign-in is refused
+until the issuer answers, so a key the issuer has withdrawn does not stay
+trusted by a server that cannot reach it.
 """
 
 import json
@@ -14,6 +19,7 @@ from .rsa import check_public_key
 from .tokens import TokenError, b64url_decode
 
 MAX_AGE_SECONDS = 24 * 60 * 60
+MAX_HELD_SECONDS = 7 * 24 * 60 * 60
 MIN_REFETCH_SECONDS = 60
 MAX_DOCUMENT_BYTES = 1024 * 1024
 TIMEOUT_SECONDS = 10
@@ -60,11 +66,15 @@ class KeySet:
             if not isinstance(jwks_uri, str):
                 raise TokenError("the discovery document has no jwks_uri")
             jwks = self._fetch_json(jwks_uri)
+            if not isinstance(jwks, dict) or not isinstance(jwks.get("keys"), list):
+                raise TokenError("the issuer's key set is not a JSON Web Key Set")
             keys = {}
-            for jwk in (jwks.get("keys") if isinstance(jwks, dict) else None) or []:
+            for jwk in jwks["keys"]:
                 key = _rsa_key(jwk)
                 if key:
                     keys[jwk["kid"]] = key
+            if not keys:
+                raise TokenError("the issuer's key set holds no RS256 signing key")
         except Exception as e:
             # A failed refresh keeps the keys already held.
             self.error = str(e) if isinstance(e, TokenError) else "could not fetch the issuer's signing keys"
@@ -81,6 +91,8 @@ class KeySet:
         stale = self.fetched_at is None or self._now() - self.fetched_at >= MAX_AGE_SECONDS
         if (stale or kid not in self.keys) and self._may_fetch():
             self._fetch()
+        if self.fetched_at is not None and self._now() - self.fetched_at >= MAX_HELD_SECONDS:
+            self.keys = {}
         if kid not in self.keys:
             raise TokenError(self.error or "the token's signing key is not one of the issuer's")
         return self.keys[kid]
