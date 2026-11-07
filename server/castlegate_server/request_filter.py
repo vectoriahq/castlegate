@@ -6,10 +6,12 @@ Transaction's body. A refusal there stops the service.
 
 onProjectReady runs once QGIS Server has opened the project and before the
 service. It reads that project's rules and checks the transaction against
-them. A service exception set there does not stop the service (QgsServer
-checks for one only before opening the project), so a transaction it refuses
-is refused through the access answers instead: every edit permission answers
-no for the rest of the request, and QGIS Server answers with its own refusal.
+them, and the request's own filters and sorts (request_expressions.py). A
+service exception set there does not stop the service (QgsServer checks for
+one only before opening the project), so what it refuses is refused through
+the access answers instead: for a transaction every edit permission answers
+no, and for a filter or sort every answer is no, for the rest of the request.
+QGIS Server then answers with its own refusal.
 
 onResponseComplete adds WWW-Authenticate to a 401 and writes one audit line per
 action of a transaction.
@@ -24,7 +26,7 @@ import traceback
 from qgis.core import Qgis, QgsProject
 from qgis.server import QgsServerException, QgsServerFilter
 
-from . import transaction
+from . import request_expressions, transaction
 from .core.tokens import TokenError, verify
 from .names import type_name_map
 from .state import RequestState, log
@@ -53,6 +55,7 @@ class RequestFilter(QgsServerFilter):
         try:
             handler = self._handler()
             params = {str(k).upper(): str(v) for k, v in handler.parameterMap().items()}
+            state.params = params
             state.service = params.get("SERVICE", "").upper()
             if state.service not in SERVICES:
                 self._refuse("this service is not available on this server")
@@ -66,8 +69,8 @@ class RequestFilter(QgsServerFilter):
                     return True  # the status service answers 401 itself, with the reason
                 self._refuse("sign-in required: " + state.sign_in_error, 401)
                 return True
+            state.body = body = bytes(handler.data() or b"")
             if state.service == "WFS":
-                body = bytes(handler.data() or b"")
                 if params.get("REQUEST", "").lower() == "transaction" or (body and transaction.is_transaction(body)):
                     try:
                         state.actions = transaction.read(body)
@@ -86,6 +89,10 @@ class RequestFilter(QgsServerFilter):
 
     def onProjectReady(self):
         state = self.plugin.state
+        if state.person is None:
+            # Only the status service lets a request with no sign-in this far, and it
+            # answers 401 without the rules, so they are not read for it.
+            return True
         try:
             project = QgsProject.instance()
             if project is None or not project.fileName():
@@ -93,14 +100,26 @@ class RequestFilter(QgsServerFilter):
             state.project_rules = self.plugin.rules_cache.get(project)
             if project is not None:
                 state.type_names = type_name_map(project)
-            if state.person is not None and state.actions:
+            rules = state.project_rules
+            if state.service != "CASTLEGATE" and rules is not None and rules.loaded:
+                from qgis.core import QgsExpression
+
+                hidden = rules.rules.hidden_anywhere(state.person, QgsExpression.quotedString)
+                if project is not None:
+                    hidden = request_expressions.with_aliases(hidden, project)
+                state.read_refusal = request_expressions.refusal(
+                    state.service, state.params, state.body, hidden, request_expressions.qgis_check_expression
+                )
+                if state.read_refusal:
+                    log("refused a request for %s: %s" % (state.person.id, state.read_refusal), Qgis.MessageLevel.Warning)
+            if state.actions:
                 state.edit_refusal = self._check_actions(state)
                 if state.edit_refusal:
                     log("refused a transaction for %s: %s" % (state.person.id, state.edit_refusal), Qgis.MessageLevel.Warning)
         except Exception:  # noqa: BLE001 - see the module docstring
             log("onProjectReady failed, refusing: " + traceback.format_exc(), Qgis.MessageLevel.Critical)
             state.project_rules = None
-            state.edit_refusal = "the request was refused"
+            state.edit_refusal = state.read_refusal = "the request was refused"
         return True
 
     def _check_actions(self, state):
@@ -151,8 +170,8 @@ class RequestFilter(QgsServerFilter):
 
     def _audit(self, state, body):
         text = body[:8000].decode("utf-8", "replace")
-        if state.edit_refusal:
-            outcome = "refused (%s)" % state.edit_refusal
+        if state.edit_refusal or state.read_refusal:
+            outcome = "refused (%s)" % (state.edit_refusal or state.read_refusal)
         elif "ServiceException" in text or "FAILED" in text:
             outcome = "refused by QGIS Server"
         else:

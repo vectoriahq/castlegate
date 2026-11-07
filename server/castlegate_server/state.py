@@ -32,6 +32,11 @@ class RequestState:
     challenge: bool = False
     # A WFS type name to the published name the rules use, for the opened project.
     type_names: dict = field(default_factory=dict)
+    # The request's parameters, names in upper case, and its body.
+    params: dict = field(default_factory=dict)
+    body: bytes = b""
+    # When the plugin refuses the request's own filters or sorts: why. Every answer is then no.
+    read_refusal: str = ""
 
 
 def one_line(text):

@@ -75,17 +75,53 @@ class Reading(unittest.TestCase):
 
     def test_a_row_naming_a_person_by_email_object_id_or_group(self):
         by_email = parse_row(row(who="alice@example.org"))
-        by_id = parse_row(row(who="AAAA"))
-        by_group = parse_row(row(kind="group", who="G1"))
+        by_id = parse_row(row(who="aaaa"))
+        by_group = parse_row(row(kind="group", who="g1"))
         self.assertTrue(by_email.names(ALICE) and by_id.names(ALICE) and by_group.names(ALICE))
         self.assertFalse(by_email.names(BOB) or by_id.names(BOB))
         self.assertTrue(by_group.names(BOB))
+
+    def test_a_guid_matches_in_any_case(self):
+        oid, group = "aaaaaaaa-0000-4000-8000-00000000000a", "11111111-0000-4000-8000-000000000001"
+        person = Person(id=oid, email="", groups=frozenset({group}))
+        self.assertTrue(parse_row(row(who=oid.upper())).names(person))
+        self.assertTrue(parse_row(row(kind="group", who=group.upper())).names(person))
+
+    def test_an_id_that_is_not_a_guid_matches_exactly(self):
+        # Review finding: an OpenID Connect sub is case-sensitive, so lower-casing
+        # every id made two people named AbC and aBc one person.
+        person = Person(id="AbC", email="", groups=frozenset({"Editors"}))
+        self.assertTrue(parse_row(row(who="AbC")).names(person))
+        self.assertFalse(parse_row(row(who="abc")).names(person))
+        self.assertTrue(parse_row(row(kind="group", who="Editors")).names(person))
+        self.assertFalse(parse_row(row(kind="group", who="editors")).names(person))
+
+    def test_only_a_to_z_are_lower_cased_in_an_email(self):
+        # Review finding: str.lower() turns the Kelvin sign into k, so a row for
+        # kim@example.org also named the holder of "\u212aim@example.org".
+        kim = Person(id="dddddddd-0000-4000-8000-00000000000d", email="kim@example.org", groups=frozenset())
+        self.assertTrue(parse_row(row(who="KIM@Example.org")).names(kim))
+        self.assertFalse(parse_row(row(who="\u212aim@example.org")).names(kim))
 
     def test_an_email_row_never_names_a_person_without_an_email(self):
         self.assertFalse(parse_row(row(who="alice@example.org")).names(NO_EMAIL))
 
     def test_a_person_row_naming_an_id_is_not_a_group(self):
         self.assertFalse(parse_row(row(who="g1")).names(ALICE))
+
+
+class HiddenAnywhere(unittest.TestCase):
+    def test_every_field_hidden_on_a_layer_the_person_may_see(self):
+        rows, problems = parse_rows([
+            row(layer="assets", hidden_fields="secret"),
+            row(layer="notes", hidden_fields="author, cost"),
+            row(layer="notes", can_see=False, can_add=True, hidden_fields="other"),
+            row(layer="unseen", can_see=False, can_add=True, hidden_fields="never"),
+            row(who="bob@example.org", layer="assets", hidden_fields="bobs"),
+        ])
+        self.assertEqual(problems, [])
+        self.assertEqual(Rules(rows).hidden_anywhere(ALICE, quote), frozenset({"secret", "author", "cost"}))
+        self.assertEqual(Rules(rows).hidden_anywhere(NO_EMAIL, quote), frozenset())
 
 
 class Substituting(unittest.TestCase):

@@ -9,7 +9,7 @@ The table is a layer of the project itself, named in the project variable `castl
 | Column | Holds |
 | --- | --- |
 | `kind` | `person` or `group` |
-| `who` | for a person, their sign-in email or their object ID; for a group, its object ID |
+| `who` | for a person, their sign-in email or their object ID; for a group, its object ID. An email matches whatever the case of its letters A to Z, and so does an ID written as a GUID, as Entra's are; any other ID must match exactly |
 | `layer` | the name the project publishes the layer under |
 | `can_see`, `can_add`, `can_change`, `can_move`, `can_delete` | yes or no. `can_change` covers a feature's details, `can_move` its shape |
 | `see_filter` | a QGIS expression choosing the features they see; empty for every feature |

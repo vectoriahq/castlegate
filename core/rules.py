@@ -13,6 +13,8 @@ only grants.
 import re
 from dataclasses import dataclass
 
+from .tokens import normal_email, normal_id
+
 COLUMNS = (
     "kind",
     "who",
@@ -44,7 +46,7 @@ class RowError(ValueError):
 @dataclass(frozen=True)
 class Row:
     kind: str  # "person" or "group"
-    who: str  # lower case: an email or object ID for a person, an object ID for a group
+    who: str  # an email as normal_email gives it, or an id as normal_id gives it
     layer: str
     rights: frozenset
     see_filter: str  # "" means every feature
@@ -110,11 +112,12 @@ def parse_row(record):
     kind = _text(record, "kind").lower()
     if kind not in ("person", "group"):
         raise RowError("kind is not person or group")
-    who = _text(record, "who").lower()
+    who = _text(record, "who")
     if not who:
         raise RowError("who is empty")
     if kind == "group" and "@" in who:
         raise RowError("a group is named by its object ID, not an email")
+    who = normal_email(who) if kind == "person" and "@" in who else normal_id(who)
     layer = _text(record, "layer")
     if not layer:
         raise RowError("layer is empty")
@@ -257,3 +260,12 @@ class Rules:
     def answer(self, person, layer, quote):
         matching = [row for row in self._by_layer.get(layer, []) if row.names(person)]
         return combine(matching, person, quote)
+
+    def hidden_anywhere(self, person, quote):
+        """Every field hidden from the person on a layer they may see."""
+        found = set()
+        for layer in self._by_layer:
+            answer = self.answer(person, layer, quote)
+            if "see" in answer.rights:
+                found |= answer.hidden
+        return frozenset(found)

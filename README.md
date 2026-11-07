@@ -13,7 +13,7 @@ The design and its decisions are in Groundwork's plan, `docs/plans/qgis-server-a
   python scripts/build.py
   ```
 
-- `install/`: how to set it up behind each web server, and the status check every setup ends with ([`install/README.md`](install/README.md)). What it does not protect is in [`docs/limits.md`](docs/limits.md).
+- `install/`: how to set it up behind each web server, and the status check every setup ends with ([`install/README.md`](install/README.md)). What it does not protect is in [`docs/limits.md`](docs/limits.md). The brief for its independent security review is [`docs/security-review.md`](docs/security-review.md).
 - `tests/core/` and `tests/plugin/`: tests of `core/` and of the plugin's save-request reader, in plain Python 3.12 or later:
 
   ```bash

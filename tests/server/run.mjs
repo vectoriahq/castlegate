@@ -317,6 +317,70 @@ async function checkFilters() {
   record("filter-wfs-getfeature", bob.json?.features?.length === 4 && owners.join() === "bob@example.org" && alice.json?.features?.length === 8, `bob gets ${bob.json?.features?.length} (owners ${owners}), alice gets ${alice.json?.features?.length}`);
   const fields = Object.keys(bob.json?.features?.[0]?.properties ?? {});
   record("hidden-field-values-getfeature", fields.length > 0 && !fields.includes("secret"), `bob's fields: ${fields.join(", ")}`);
+  // Review finding: QGIS Server runs a request's own filter or sort without asking the access
+  // filter, so a filter on "secret" told bob its values, and functions such as aggregate() read
+  // layers he may not see, the rules layer included. Each is now refused, whatever its outcome
+  // would have been, and a filter on a field he may see still works.
+  const features = (r) => (r.status === 200 ? r.json?.features?.length : undefined);
+  const refusedFor = async (id, who, extra, label) => {
+    const r = await getFeatures(who, "assets", extra);
+    record(id, features(r) === undefined, `${label}: status ${r.status}: ${short(r.text)}`);
+  };
+  await refusedFor("filter-hidden-field-refused", "bob", { EXP_FILTER: `"secret" = 'secret 1'` }, `bob's EXP_FILTER on the hidden "secret"`);
+  await refusedFor("filter-hidden-field-no-answer", "bob", { EXP_FILTER: `"secret" = 'no such secret'` }, `the same with a wrong guess`);
+  await refusedFor("filter-other-layer-refused", "bob", { EXP_FILTER: `aggregate('restricted', 'count', $id) > 0` }, `bob's EXP_FILTER counting a layer he may not see`);
+  await refusedFor("filter-rules-layer-refused", "bob", { EXP_FILTER: `get_feature('castlegate_rules', 'who', 'alice@example.org') IS NOT NULL` }, `bob's EXP_FILTER reading the rules layer`);
+  await refusedFor("filter-eval-refused", "bob", { EXP_FILTER: `eval('"sec' || 'ret"') = 'secret 1'` }, `bob's EXP_FILTER building the name with eval()`);
+  await refusedFor("filter-attribute-refused", "bob", { EXP_FILTER: `attribute($currentfeature, 'secret') = 'secret 1'` }, `bob's EXP_FILTER reading the field with attribute()`);
+  await refusedFor("filter-variable-refused", "bob", { EXP_FILTER: `@project_path IS NOT NULL` }, `bob's EXP_FILTER with a variable`);
+  // Review finding on #7: QGIS also finds a field by its alias, here "Secret code" for "secret".
+  await refusedFor("filter-hidden-field-alias-refused", "bob", { EXP_FILTER: `"Secret code" = 'secret 1'` }, `bob's EXP_FILTER on "secret" by its alias`);
+  await refusedFor("sort-hidden-field-alias-refused", "bob", { SORTBY: `"secret CODE" ASC` }, `bob's SORTBY on "secret" by its alias`);
+  await refusedFor("sort-hidden-field-refused", "bob", { SORTBY: "secret ASC" }, `bob's SORTBY on the hidden "secret"`);
+  const ogc = (inner) => `<ogc:Filter xmlns:ogc="http://www.opengis.net/ogc">${inner}</ogc:Filter>`;
+  const equal = (name, value) => `<ogc:PropertyIsEqualTo><ogc:PropertyName>${name}</ogc:PropertyName><ogc:Literal>${value}</ogc:Literal></ogc:PropertyIsEqualTo>`;
+  await refusedFor("ogc-filter-hidden-field-refused", "bob", { FILTER: ogc(equal("secret", "secret 1")) }, `bob's FILTER on the hidden "secret"`);
+  await refusedFor("ogc-filter-hidden-field-alias-refused", "bob", { FILTER: ogc(equal("Secret code", "secret 1")) }, `bob's FILTER on "secret" by its alias`);
+  // Review finding on #7: QGIS takes a property's name from its first child node, here the text before the comment.
+  await refusedFor("ogc-filter-hidden-field-split-refused", "bob", { FILTER: ogc(equal("secret<!--x-->zzz", "secret 1")) }, `bob's FILTER naming "secret" before a comment`);
+  await refusedFor("ogc-filter-function-refused", "bob", { FILTER: ogc(`<ogc:PropertyIsGreaterThan><ogc:Function name="aggregate"><ogc:Literal>restricted</ogc:Literal><ogc:Literal>count</ogc:Literal><ogc:Literal>1</ogc:Literal></ogc:Function><ogc:Literal>0</ogc:Literal></ogc:PropertyIsGreaterThan>`) }, `bob's FILTER calling aggregate()`);
+  const allowed = async (id, who, extra, expected, label) => {
+    const r = await getFeatures(who, "assets", extra);
+    record(id, features(r) === expected, `${label}: status ${r.status}, ${features(r) ?? short(r.text)} features`);
+  };
+  // QGIS reads that name as "secret" for alice, who may see it.
+  await allowed("ogc-filter-split-read-by-qgis", "alice", { FILTER: ogc(equal("secret<!--x-->zzz", "secret 0")) }, 1, `alice's FILTER naming "secret" before a comment`);
+  await allowed("filter-visible-field-allowed", "bob", { EXP_FILTER: `"name" = 'asset 1'` }, 1, `bob's EXP_FILTER on "name"`);
+  await allowed("ogc-filter-visible-field-allowed", "bob", { FILTER: ogc(equal("name", "asset 1")) }, 1, `bob's FILTER on "name"`);
+  await allowed("sort-visible-field-allowed", "bob", { SORTBY: "name DESC" }, 4, `bob's SORTBY on "name"`);
+  // QGIS resolves the alias for alice, who may see "secret", so the refusals above are not for an unknown name.
+  await allowed("filter-alias-resolves", "alice", { EXP_FILTER: `"Secret code" = 'secret 0'` }, 1, `alice's EXP_FILTER on "secret" by its alias`);
+  await allowed("filter-field-shown-allowed", "alice", { EXP_FILTER: `"secret" = 'secret 0'` }, 1, `alice's EXP_FILTER on "secret", which she may see`);
+  const getFeatureBody = (inner) => `<wfs:GetFeature service="WFS" version="1.1.0" outputFormat="application/vnd.geo+json" xmlns:wfs="http://www.opengis.net/wfs" xmlns:ogc="http://www.opengis.net/ogc"><wfs:Query typeName="assets">${inner}</wfs:Query></wfs:GetFeature>`;
+  const bodyHidden = await req({ SERVICE: "WFS" }, { who: "bob", body: getFeatureBody(ogc(equal("secret", "secret 1"))) });
+  record("body-filter-hidden-field-refused", !(bodyHidden.status === 200 && /"features"\s*:\s*\[\s*\{/.test(bodyHidden.text)), `bob's GetFeature body filtering on "secret": status ${bodyHidden.status}: ${short(bodyHidden.text)}`);
+  // Review finding on #7: Qt reads UTF-16BE with no byte order mark as XML, and the plugin skipped it.
+  const utf16 = (text) => Buffer.from(text, "utf16le").swap16();
+  const bodyUtf16 = await req({ SERVICE: "WFS", REQUEST: "GetFeature" }, { who: "bob", body: utf16(getFeatureBody(ogc(equal("secret", "secret 1")))) });
+  record("body-utf16-hidden-field-refused", !(bodyUtf16.status === 200 && /"features"\s*:\s*\[\s*\{/.test(bodyUtf16.text)), `bob's UTF-16BE GetFeature body filtering on "secret": status ${bodyUtf16.status}: ${short(bodyUtf16.text)}`);
+  // QGIS reads that body for alice, who may see "secret", so the refusal above is not for an unreadable body.
+  const aliceUtf16 = await req({ SERVICE: "WFS", REQUEST: "GetFeature" }, { who: "alice", body: utf16(getFeatureBody(ogc(equal("secret", "secret 0")))) });
+  record("body-utf16-read-by-qgis", aliceUtf16.status === 200 && /secret 0/.test(aliceUtf16.text), `alice's UTF-16BE GetFeature body filtering on "secret": status ${aliceUtf16.status}: ${short(aliceUtf16.text)}`);
+  const bodyVisible = await req({ SERVICE: "WFS" }, { who: "bob", body: getFeatureBody(ogc(equal("name", "asset 1"))) });
+  record("body-filter-visible-field-allowed", bodyVisible.status === 200 && /asset 1/.test(bodyVisible.text), `bob's GetFeature body filtering on "name": status ${bodyVisible.status}: ${short(bodyVisible.text)}`);
+  const featureInfo = (who, filter) => req({ SERVICE: "WMS", VERSION: "1.3.0", REQUEST: "GetFeatureInfo", LAYERS: "assets", QUERY_LAYERS: "assets", INFO_FORMAT: "application/json", FILTER: filter, FEATURE_COUNT: "50", CRS: "EPSG:4326", WIDTH: "10", HEIGHT: "10", BBOX: "-90,-180,90,180" }, { who });
+  const infoCount = (r) => { try { return r.status === 200 ? JSON.parse(r.text).features?.length : undefined; } catch { return undefined; } };
+  const wmsHidden = await featureInfo("bob", `assets:"secret" = 'secret 1'`);
+  record("wms-filter-hidden-field-refused", infoCount(wmsHidden) === undefined, `bob's WMS FILTER on "secret": status ${wmsHidden.status}: ${short(wmsHidden.text)}`);
+  const wmsVisible = await featureInfo("bob", `(${ogc(equal("name", "asset 1"))})`);
+  record("wms-filter-visible-field-allowed", infoCount(wmsVisible) === 1, `bob's WMS OGC FILTER on "name": status ${wmsVisible.status}, ${infoCount(wmsVisible) ?? short(wmsVisible.text)} features`);
+  // Review finding on #7: a layer:condition is SQL for the database, which can read a hidden
+  // column without its name being written, so a condition is refused whatever it names.
+  const wmsCondition = await featureInfo("bob", `assets:"name" = 'asset 1'`);
+  record("wms-filter-condition-refused", infoCount(wmsCondition) === undefined, `bob's WMS FILTER condition on "name": status ${wmsCondition.status}: ${short(wmsCondition.text)}`);
+  const sld = `<StyledLayerDescriptor version="1.0.0" xmlns="http://www.opengis.net/sld"><NamedLayer><Name>assets</Name><UserStyle><FeatureTypeStyle><Rule><TextSymbolizer><Label><PropertyName xmlns="http://www.opengis.net/ogc">secret</PropertyName></Label></TextSymbolizer></Rule></FeatureTypeStyle></UserStyle></NamedLayer></StyledLayerDescriptor>`;
+  const styled = await req({ SERVICE: "WMS", VERSION: "1.3.0", REQUEST: "GetMap", LAYERS: "assets", STYLES: "", CRS: "EPSG:4326", BBOX: "-38,144,-37,146", WIDTH: "64", HEIGHT: "64", FORMAT: "image/png", SLD_BODY: sld }, { who: "bob" });
+  record("wms-style-in-request-refused", !(styled.status === 200 && /image\/png/.test(styled.headers?.get?.("content-type") ?? "")), `bob's GetMap with a style labelling "secret": status ${styled.status}: ${short(styled.text)}`);
   const big = await getFeatures("alice", "big");
   record("filter-placeholder", big.json?.features?.length === 1 && big.json.features[0].properties.owner === "alice@example.org", `alice's big features with "owner" = {{email}}: ${big.json?.features?.length}`);
 
@@ -391,6 +455,10 @@ async function checkSaves() {
   record("transaction-native-refused", native.status === 403, `a Native action: status ${native.status}: ${short(native.text)}`);
   const noRequest = await req({ SERVICE: "WFS" }, { who: "bob", body: tx(update("assets", 2, { secret: "via body only" })) });
   record("transaction-named-only-in-body", !succeeded(noRequest) && (await feature("assets", 2)).properties.secret === "secret 1", `bob's hidden-field update with REQUEST only in the body: status ${noRequest.status}: ${short(noRequest.text)}`);
+  // A root named with a long s (U+017F) is not a Transaction to the plugin's lower(). QGIS
+  // answers it as an unsupported request on 3.44 and 4.2; this fails if a later QGIS reads it as one.
+  const folded = await req({ SERVICE: "WFS" }, { who: "bob", body: tx(update("assets", 2, { secret: "via a folded name" })).replaceAll("wfs:Transaction", "wfs:Tran\u017Faction") });
+  record("transaction-folded-name-refused", !succeeded(folded) && (await feature("assets", 2)).properties.secret === "secret 1", `bob's hidden-field update with the root named Tran\u017Faction: status ${folded.status}: ${short(folded.text)}`);
 
   // Review finding on #3: a line break in a type name wrote a second, forged audit line.
   const forged = "x&#10;audit id=FORGED email=alice@example.org layer=assets action=delete outcome=done";

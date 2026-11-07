@@ -46,8 +46,17 @@ class Accepted(unittest.TestCase):
 
     def test_the_claims_read_follow_the_settings(self):
         settings = replace(SETTINGS, id_claim="sub", email_claim="email", groups_claim="roles_groups")
-        person = check(token(claims(sub="S-1", email="b@example.org", roles_groups=["G"])), settings)
-        self.assertEqual(person, Person(id="s-1", email="b@example.org", groups=frozenset({"g"})))
+        person = check(token(claims(sub="S-1", email="B@Example.org", roles_groups=["G"])), settings)
+        self.assertEqual(person, Person(id="S-1", email="b@example.org", groups=frozenset({"G"})))
+
+    def test_a_guid_is_lower_cased_and_other_ids_kept_as_written(self):
+        person = check(token(claims(oid="00000000-0000-0000-0000-0000000000AA", groups=["AbC"])))
+        self.assertEqual((person.id, person.groups), ("00000000-0000-0000-0000-0000000000aa", frozenset({"AbC"})))
+
+    def test_only_a_to_z_are_lower_cased_in_an_email(self):
+        # Review finding: str.lower() turned the Kelvin sign into k, so this signed in as kim@example.org.
+        email = check(token(claims(preferred_username="\u212aIM@example.org"))).email
+        self.assertEqual(email, "\u212aim@example.org")
 
     def test_a_token_within_the_leeway_of_its_times(self):
         now = time.time()
@@ -178,6 +187,21 @@ class Refused(unittest.TestCase):
             with self.assertRaises(TokenError):
                 b64url_decode(bad)
         self.assertEqual(b64url_decode("AQAB"), b"\x01\x00\x01")
+        # Review finding: "AQ" and "AR" both decoded to b"\x01", so one value had
+        # several spellings. Only the encoder's own spelling is accepted.
+        self.assertEqual(b64url_decode("AQ"), b"\x01")
+        for other in ("AR", "AS", "Af"):
+            with self.assertRaises(TokenError):
+                b64url_decode(other)
+
+    def test_a_signature_respelt_is_refused(self):
+        h, p, s = token().split(".")
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        # A 2048-bit signature is 256 bytes, so its last character carries 2 bits
+        # and 4 unused ones: the characters in its group of 16 decode alike.
+        group = alphabet.index(s[-1]) >> 4
+        other = next(c for c in alphabet if c != s[-1] and alphabet.index(c) >> 4 == group)
+        self.refused(h + "." + p + "." + s[:-1] + other, "malformed")
 
     def test_a_huge_token(self):
         self.refused(token(claims(pad="x" * 20000)), "too large")

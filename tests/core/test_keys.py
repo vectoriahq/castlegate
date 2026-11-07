@@ -25,6 +25,8 @@ class Issuer:
         self.discovery = {"issuer": ISSUER, "jwks_uri": JWKS_URI}
         self.fetches = 0
         self.fail = False
+        # When set, answered for the key set in place of {"keys": jwks}.
+        self.jwks_body = None
 
     def __call__(self, url):
         if self.fail:
@@ -33,6 +35,8 @@ class Issuer:
             return self.discovery
         if url == JWKS_URI:
             self.fetches += 1
+            if self.jwks_body is not None:
+                return self.jwks_body
             return {"keys": self.jwks}
         raise AssertionError("unexpected fetch " + url)
 
@@ -84,6 +88,32 @@ class KeySetTests(unittest.TestCase):
         with self.assertRaises(TokenError) as raised:
             self.keys.get("made-up")
         self.assertIn("could not fetch", str(raised.exception))
+
+    def test_keys_held_through_a_week_of_failed_refreshes_are_dropped(self):
+        # Review finding: a withdrawn key stayed trusted for as long as the issuer
+        # could not be reached, which someone blocking that route could arrange.
+        k = key()
+        self.keys.get(k.kid)
+        self.issuer.fail = True
+        self.clock.t += keys_module.MAX_HELD_SECONDS - 1
+        self.assertEqual(self.keys.get(k.kid), (k.n, k.e))
+        self.clock.t += 1
+        with self.assertRaises(TokenError) as raised:
+            self.keys.get(k.kid)
+        self.assertIn("could not fetch", str(raised.exception))
+        self.issuer.fail = False
+        self.clock.t += keys_module.MIN_REFETCH_SECONDS
+        self.assertEqual(self.keys.get(k.kid), (k.n, k.e))
+
+    def test_an_answer_that_is_not_a_key_set_keeps_the_keys_held(self):
+        # Review finding: a 200 answer such as {"error": ...} replaced the keys with none.
+        k = key()
+        self.keys.get(k.kid)
+        for body in ([], {"error": "busy"}, {"keys": "none"}, {"keys": []}, {"keys": [{"kty": "EC", "kid": "x"}]}):
+            self.issuer.jwks_body = body
+            self.clock.t += keys_module.MAX_AGE_SECONDS
+            self.assertEqual(self.keys.get(k.kid), (k.n, k.e), body)
+            self.assertIsNotNone(self.keys.error, body)
 
     def test_no_keys_when_the_issuer_cannot_be_reached(self):
         self.issuer.fail = True
