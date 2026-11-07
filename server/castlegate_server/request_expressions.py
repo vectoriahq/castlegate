@@ -4,9 +4,9 @@ QGIS Server runs a request's own filter or sort without asking the access
 filter about it. So a filter on a hidden field tells the person its values by
 which features come back, and a filter calling a function such as
 `aggregate()` or `get_feature()` reads other layers, the rules layer
-included. The plugin refuses a request whose filter or sort names a field the
-person may not see on any layer of the project, uses a function outside
-`FUNCTIONS`, or uses a variable.
+included. The plugin refuses a request whose filter or sort names a field
+hidden from the person on a layer they may see, by its name or its alias,
+uses a function outside `FUNCTIONS`, or uses a variable.
 
 What is read, following QGIS Server's own readers:
 
@@ -206,8 +206,9 @@ def refusal(service, params, body, hidden, check_expression):
     """Why the request's own filters or sorts are refused, or "" when they are not.
 
     params maps upper-case parameter names to values; hidden holds every field
-    the person may not see on any layer of the project; check_expression(text,
-    hidden, where, must_parse) raises Refused for an expression that may not run.
+    hidden from the person on a layer they may see, and each such field's alias
+    (with_aliases); check_expression(text, hidden, where, must_parse) raises
+    Refused for an expression that may not run.
     """
     try:
         if service == "WFS":
@@ -235,6 +236,25 @@ def refusal(service, params, body, hidden, check_expression):
     except Refused as e:
         return str(e)
     return ""
+
+
+def with_aliases(hidden, project):
+    """hidden, with the alias of every field of the project's vector layers whose name it holds.
+
+    QGIS finds a field named in an expression or an OGC filter by its name, then
+    by its name without case, then by its alias without case
+    (QgsFields::lookupField), so a hidden field could be named by its alias.
+    """
+    from qgis.core import QgsVectorLayer
+
+    folded = {name.casefold() for name in hidden}
+    found = set(hidden)
+    for layer in project.mapLayers().values():
+        if isinstance(layer, QgsVectorLayer):
+            for f in layer.fields():
+                if f.name().casefold() in folded and f.alias():
+                    found.add(f.alias())
+    return frozenset(found)
 
 
 def qgis_check_expression(text, hidden, where, must_parse):

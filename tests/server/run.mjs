@@ -333,10 +333,14 @@ async function checkFilters() {
   await refusedFor("filter-eval-refused", "bob", { EXP_FILTER: `eval('"sec' || 'ret"') = 'secret 1'` }, `bob's EXP_FILTER building the name with eval()`);
   await refusedFor("filter-attribute-refused", "bob", { EXP_FILTER: `attribute($currentfeature, 'secret') = 'secret 1'` }, `bob's EXP_FILTER reading the field with attribute()`);
   await refusedFor("filter-variable-refused", "bob", { EXP_FILTER: `@project_path IS NOT NULL` }, `bob's EXP_FILTER with a variable`);
+  // Review finding on #7: QGIS also finds a field by its alias, here "Secret code" for "secret".
+  await refusedFor("filter-hidden-field-alias-refused", "bob", { EXP_FILTER: `"Secret code" = 'secret 1'` }, `bob's EXP_FILTER on "secret" by its alias`);
+  await refusedFor("sort-hidden-field-alias-refused", "bob", { SORTBY: `"secret CODE" ASC` }, `bob's SORTBY on "secret" by its alias`);
   await refusedFor("sort-hidden-field-refused", "bob", { SORTBY: "secret ASC" }, `bob's SORTBY on the hidden "secret"`);
   const ogc = (inner) => `<ogc:Filter xmlns:ogc="http://www.opengis.net/ogc">${inner}</ogc:Filter>`;
   const equal = (name, value) => `<ogc:PropertyIsEqualTo><ogc:PropertyName>${name}</ogc:PropertyName><ogc:Literal>${value}</ogc:Literal></ogc:PropertyIsEqualTo>`;
   await refusedFor("ogc-filter-hidden-field-refused", "bob", { FILTER: ogc(equal("secret", "secret 1")) }, `bob's FILTER on the hidden "secret"`);
+  await refusedFor("ogc-filter-hidden-field-alias-refused", "bob", { FILTER: ogc(equal("Secret code", "secret 1")) }, `bob's FILTER on "secret" by its alias`);
   await refusedFor("ogc-filter-function-refused", "bob", { FILTER: ogc(`<ogc:PropertyIsGreaterThan><ogc:Function name="aggregate"><ogc:Literal>restricted</ogc:Literal><ogc:Literal>count</ogc:Literal><ogc:Literal>1</ogc:Literal></ogc:Function><ogc:Literal>0</ogc:Literal></ogc:PropertyIsGreaterThan>`) }, `bob's FILTER calling aggregate()`);
   const allowed = async (id, who, extra, expected, label) => {
     const r = await getFeatures(who, "assets", extra);
@@ -345,6 +349,8 @@ async function checkFilters() {
   await allowed("filter-visible-field-allowed", "bob", { EXP_FILTER: `"name" = 'asset 1'` }, 1, `bob's EXP_FILTER on "name"`);
   await allowed("ogc-filter-visible-field-allowed", "bob", { FILTER: ogc(equal("name", "asset 1")) }, 1, `bob's FILTER on "name"`);
   await allowed("sort-visible-field-allowed", "bob", { SORTBY: "name DESC" }, 4, `bob's SORTBY on "name"`);
+  // QGIS resolves the alias for alice, who may see "secret", so the refusals above are not for an unknown name.
+  await allowed("filter-alias-resolves", "alice", { EXP_FILTER: `"Secret code" = 'secret 0'` }, 1, `alice's EXP_FILTER on "secret" by its alias`);
   await allowed("filter-field-shown-allowed", "alice", { EXP_FILTER: `"secret" = 'secret 0'` }, 1, `alice's EXP_FILTER on "secret", which she may see`);
   const getFeatureBody = (inner) => `<wfs:GetFeature service="WFS" version="1.1.0" outputFormat="application/vnd.geo+json" xmlns:wfs="http://www.opengis.net/wfs" xmlns:ogc="http://www.opengis.net/ogc"><wfs:Query typeName="assets">${inner}</wfs:Query></wfs:GetFeature>`;
   const bodyHidden = await req({ SERVICE: "WFS" }, { who: "bob", body: getFeatureBody(ogc(equal("secret", "secret 1"))) });

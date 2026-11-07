@@ -105,6 +105,8 @@ class RequestFilter(QgsServerFilter):
                 from qgis.core import QgsExpression
 
                 hidden = rules.rules.hidden_anywhere(state.person, QgsExpression.quotedString)
+                if project is not None:
+                    hidden = request_expressions.with_aliases(hidden, project)
                 state.read_refusal = request_expressions.refusal(
                     state.service, state.params, state.body, hidden, request_expressions.qgis_check_expression
                 )

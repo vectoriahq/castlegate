@@ -158,6 +158,9 @@ def project(path, rules_table=None, variable=None):
         layer = layer_for(table, "site notes" if table == "site_notes" else table)
         if not layer.isValid():
             raise SystemExit("layer %s is not valid" % table)
+        if table == "assets":
+            # QGIS also finds a field by its alias, so a filter can name a hidden field this way.
+            layer.setFieldAlias(layer.fields().indexOf("secret"), "Secret code")
         p.addMapLayer(layer)
         ids.append(layer.id())
     if rules_table:
