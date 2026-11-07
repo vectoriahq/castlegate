@@ -1,6 +1,6 @@
 # Castlegate spike
 
-The prototype from package 1 of Groundwork's plan for per-person access to QGIS Server layers (`docs/plans/qgis-server-access-control.md` in `vectoriahq/groundwork`, whose § "Package 1, first part: findings, 2026-11-04" records what it found). It is a prototype to learn from, not the plugin package 2 builds.
+Castlegate's first prototype, and the harness that ran its checks against the Docker QGIS Server. It is a prototype to learn from, not the plugin in `server/`.
 
 - `plugin/castlegate_spike/`: the plugin. `token.py` checks an RS256 token with Python's own `pow()` and `hashlib`; `rules.py` combines the rows that name a person; `plugin.py` holds the access-control filter, the request filter and the status service.
 - `rules.json`: the test rules. The harness adds a read row per layer of the 100-layer project.
