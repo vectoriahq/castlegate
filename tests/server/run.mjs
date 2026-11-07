@@ -341,11 +341,15 @@ async function checkFilters() {
   const equal = (name, value) => `<ogc:PropertyIsEqualTo><ogc:PropertyName>${name}</ogc:PropertyName><ogc:Literal>${value}</ogc:Literal></ogc:PropertyIsEqualTo>`;
   await refusedFor("ogc-filter-hidden-field-refused", "bob", { FILTER: ogc(equal("secret", "secret 1")) }, `bob's FILTER on the hidden "secret"`);
   await refusedFor("ogc-filter-hidden-field-alias-refused", "bob", { FILTER: ogc(equal("Secret code", "secret 1")) }, `bob's FILTER on "secret" by its alias`);
+  // Review finding on #7: QGIS takes a property's name from its first child node, here the text before the comment.
+  await refusedFor("ogc-filter-hidden-field-split-refused", "bob", { FILTER: ogc(equal("secret<!--x-->zzz", "secret 1")) }, `bob's FILTER naming "secret" before a comment`);
   await refusedFor("ogc-filter-function-refused", "bob", { FILTER: ogc(`<ogc:PropertyIsGreaterThan><ogc:Function name="aggregate"><ogc:Literal>restricted</ogc:Literal><ogc:Literal>count</ogc:Literal><ogc:Literal>1</ogc:Literal></ogc:Function><ogc:Literal>0</ogc:Literal></ogc:PropertyIsGreaterThan>`) }, `bob's FILTER calling aggregate()`);
   const allowed = async (id, who, extra, expected, label) => {
     const r = await getFeatures(who, "assets", extra);
     record(id, features(r) === expected, `${label}: status ${r.status}, ${features(r) ?? short(r.text)} features`);
   };
+  // QGIS reads that name as "secret" for alice, who may see it.
+  await allowed("ogc-filter-split-read-by-qgis", "alice", { FILTER: ogc(equal("secret<!--x-->zzz", "secret 0")) }, 1, `alice's FILTER naming "secret" before a comment`);
   await allowed("filter-visible-field-allowed", "bob", { EXP_FILTER: `"name" = 'asset 1'` }, 1, `bob's EXP_FILTER on "name"`);
   await allowed("ogc-filter-visible-field-allowed", "bob", { FILTER: ogc(equal("name", "asset 1")) }, 1, `bob's FILTER on "name"`);
   await allowed("sort-visible-field-allowed", "bob", { SORTBY: "name DESC" }, 4, `bob's SORTBY on "name"`);

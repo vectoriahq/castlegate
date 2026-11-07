@@ -26,6 +26,7 @@ In scope: `core/`, `server/castlegate_server/`, and the parts of `install/` that
 Read closest:
 
 - **`server/castlegate_server/transaction.py` and `request_filter.py`.** The plugin reads each WFS save itself, because QGIS Server does not check a save against the fields a person may not set. Its reader must find at least every field and layer that QGIS Server's own reader (`src/server/services/wfs/qgswfstransaction.cpp`) acts on. Where the two could differ, the plugin is meant to read more, so a difference can only cause a refusal.
+- **`server/castlegate_server/request_expressions.py`.** The plugin reads each filter, sort and XML body a request carries before QGIS Server runs it, and must read at least every field name and function QGIS would act on, by every route QGIS reads them. The pull request that added it took three rounds of review findings on exactly that: a field's alias, a body in UTF-16, and a name split by a comment.
 - **`core/rsa.py`, `core/tokens.py` and `core/keys.py`.** The signature check uses only what Python ships, with no cryptography package, because none is in QGIS Server's Python on Windows or in its Docker image.
 - **`server/castlegate_server/access_filter.py`.** QGIS Server keeps one copy of a project for every request, so its answers must change nothing on a layer, and must depend only on the person on the request in hand.
 

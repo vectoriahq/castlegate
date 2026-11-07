@@ -92,6 +92,22 @@ class Refusals(unittest.TestCase):
         self.assertIn("secret", refusal("WFS", {"FILTER": ogc(equal("sec<x/>ret"))}))
         self.assertIn("secret", refusal("WFS", {"FILTER": ogc(equal("&#115;ecret"))}))
 
+    def test_every_name_qgis_could_take_from_a_property_is_read(self):
+        # Review finding on #7: QGIS takes a property's name from its first child node, so
+        # "secret<!--x-->zzz" names secret to QGIS, and a comment first names its own text.
+        for written in (
+            "secret<!--x-->zzz",
+            "<!--secret-->zzz",
+            "secret<![CDATA[zzz]]>",
+            "<![CDATA[secret]]>zzz",
+            "secret<?pi x?>zzz",
+            "<?secret?>zzz",
+            "<?pi secret?>zzz",
+            "secret<x/>zzz",
+        ):
+            self.assertIn("secret", refusal("WFS", {"FILTER": ogc(equal(written))}), written)
+        self.assertEqual(refusal("WFS", {"FILTER": ogc(equal("name<!--x-->"))}), "")
+
     def test_a_function_outside_the_list_is_refused(self):
         call = '<ogc:PropertyIsGreaterThan><ogc:Function name="aggregate"><ogc:Literal>r</ogc:Literal></ogc:Function><ogc:Literal>0</ogc:Literal></ogc:PropertyIsGreaterThan>'
         self.assertIn("aggregate", refusal("WFS", {"FILTER": ogc(call)}, hidden=frozenset()))
@@ -100,7 +116,7 @@ class Refusals(unittest.TestCase):
     def test_a_filter_that_is_not_xml_or_has_a_dtd_is_refused(self):
         self.assertIn("not an OGC filter", refusal("WFS", {"FILTER": '"secret" = 1'}))
         self.assertIn("not well-formed", refusal("WFS", {"FILTER": "<ogc:Filter>"}))
-        self.assertIn("not well-formed", refusal("WFS", {"FILTER": '<!DOCTYPE f [<!ENTITY e "secret">]><Filter><PropertyName>&e;</PropertyName></Filter>'}))
+        self.assertIn("document type declaration", refusal("WFS", {"FILTER": '<!DOCTYPE f [<!ENTITY e "secret">]><Filter><PropertyName>&e;</PropertyName></Filter>'}))
 
     def test_a_bbox_and_a_feature_id_filter_pass(self):
         bbox = '<ogc:BBOX><gml:Envelope xmlns:gml="http://www.opengis.net/gml"><gml:lowerCorner>0 0</gml:lowerCorner><gml:upperCorner>1 1</gml:upperCorner></gml:Envelope></ogc:BBOX>'

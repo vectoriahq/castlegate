@@ -35,8 +35,7 @@ checking an expression uses QGIS's own parser.
 """
 
 import re
-
-from .transaction import TransactionError, _local, _parse
+import xml.parsers.expat as expat
 
 # Functions a filter or sort may use: those QGIS's OGC filter reader writes for
 # the standard comparison, spatial and identifier filters, and some that read
@@ -146,25 +145,90 @@ def may_be_xml(text):
     )
 
 
+_NAME_ELEMENTS = ("PropertyName", "ValueReference")
+
+
+class _OpenName:
+    """The pieces of one PropertyName or ValueReference read so far."""
+
+    def __init__(self):
+        self.pieces = set()
+        self.run = []
+        self.text = []
+
+    def boundary(self):
+        if self.run:
+            self.pieces.add("".join(self.run))
+            self.run = []
+
+
+def _refuse_doctype(*args):
+    raise Refused("a document type declaration is not accepted")
+
+
 def xml_parts(text, where="a filter"):
-    """(names, functions): the text of every PropertyName and ValueReference, and the name of every Function.
+    """(names, functions): every name a PropertyName or ValueReference could give, and every Function's name.
+
+    QGIS takes a property's name from its first child node, whatever kind it is
+    (QgsOgcUtils, nodeColumnRefFromOgcFilter: element.firstChild().nodeValue()),
+    where QDom keeps text, CDATA sections, comments, processing instructions and
+    elements as separate nodes. So each of those pieces is a name here, and so
+    is the element's whole text, which can only refuse more.
 
     Raises Refused for a document that is not well-formed, or that has a document type declaration.
     """
     data = text.encode("utf-8") if isinstance(text, str) else bytes(text)
+    parser = expat.ParserCreate(namespace_separator=" ")
+    parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+    parser.StartDoctypeDeclHandler = _refuse_doctype
+    parser.EntityDeclHandler = _refuse_doctype
+    names, functions, open_names = set(), set(), []
+
+    def boundary():
+        for name in open_names:
+            name.boundary()
+
+    def start(tag, attrs):
+        boundary()
+        local = tag.rpartition(" ")[2]
+        if local == "Function":
+            functions.add(attrs.get("name") or "")
+        if local in _NAME_ELEMENTS:
+            open_names.append(_OpenName())
+        stack.append(local)
+
+    def end(tag):
+        boundary()
+        if stack.pop() in _NAME_ELEMENTS:
+            name = open_names.pop()
+            names.update(name.pieces)
+            names.add("".join(name.text))
+
+    def characters(chunk):
+        for name in open_names:
+            name.run.append(chunk)
+            name.text.append(chunk)
+
+    def other_node(*values):
+        boundary()
+        for name in open_names:
+            name.pieces.update(v for v in values if isinstance(v, str))
+
+    stack = []
+    parser.StartElementHandler = start
+    parser.EndElementHandler = end
+    parser.CharacterDataHandler = characters
+    parser.CommentHandler = other_node
+    parser.ProcessingInstructionHandler = other_node
+    parser.StartCdataSectionHandler = boundary
+    parser.EndCdataSectionHandler = boundary
     try:
-        root = _parse(data)
-    except TransactionError:
+        parser.Parse(data, True)
+    except Refused:
+        raise Refused("%s has a document type declaration, which is not accepted" % where)
+    except Exception:  # expat.ExpatError
         raise Refused("%s is not well-formed XML" % where)
-    names, functions = set(), set()
-    for element in root.iter():
-        local = _local(element.tag)
-        if local in ("PropertyName", "ValueReference"):
-            names.add("".join(element.itertext()).strip())
-        elif local == "Function":
-            functions.add(element.get("name") or "")
-    names.discard("")
-    return names, functions
+    return {n.strip() for n in names} - {""}, functions
 
 
 def wms_filters(value):
