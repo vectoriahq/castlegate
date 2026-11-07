@@ -39,7 +39,7 @@ class AccessFilter(QgsAccessControlFilter):
         """The person's Answer for this layer of the opened project, or NOTHING."""
         state = self.plugin.state
         rules = state.project_rules
-        if state.person is None or rules is None or not rules.loaded:
+        if state.person is None or rules is None or not rules.loaded or state.read_refusal:
             return NOTHING
         if layer.id() == rules.layer_id:
             return NOTHING  # the rules layer is never served
