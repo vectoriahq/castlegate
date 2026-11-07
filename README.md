@@ -2,7 +2,9 @@
 
 Per-person access control for QGIS Server. An administrator decides who may see and edit which layers, features and fields; the server checks each person's OpenID Connect sign-in and answers QGIS Server's access-control questions from those rules.
 
-The design and its decisions are in Groundwork's plan, `docs/plans/qgis-server-access-control.md` in `vectoriahq/groundwork`. This repository is private until licensing advice has been taken; the plan records the intended licence, GPL version 2 or later.
+Castlegate has not yet been reviewed by anyone outside Vectoria, and reviews are welcome. [`docs/security-review.md`](docs/security-review.md) is the brief for a reviewer, and [`SECURITY.md`](SECURITY.md) says how to report a problem privately.
+
+Castlegate is licensed under the GNU General Public License, version 2 or (at your option) any later version ([`LICENSE`](LICENSE)).
 
 ## What is here
 
@@ -13,7 +15,7 @@ The design and its decisions are in Groundwork's plan, `docs/plans/qgis-server-a
   python scripts/build.py
   ```
 
-- `install/`: how to set it up behind each web server, and the status check every setup ends with ([`install/README.md`](install/README.md)). What it does not protect is in [`docs/limits.md`](docs/limits.md). The brief for its independent security review is [`docs/security-review.md`](docs/security-review.md).
+- `install/`: how to set it up behind each web server, and the status check every setup ends with ([`install/README.md`](install/README.md)). What it does not protect is in [`docs/limits.md`](docs/limits.md).
 - `tests/core/` and `tests/plugin/`: tests of `core/` and of the plugin's save-request reader, in plain Python 3.12 or later:
 
   ```bash
@@ -32,4 +34,4 @@ The design and its decisions are in Groundwork's plan, `docs/plans/qgis-server-a
 
   With `CASTLEGATE_BACKEND=mssql` the layers and rules tables are in SQL Server instead of a GeoPackage, through Microsoft's ODBC Driver 18 and SQL Server 2022 Developer, whose licence terms running them accepts ([ODBC Driver 18](https://aka.ms/odbc18eula), [SQL Server 2022 Developer](https://go.microsoft.com/fwlink/?linkid=857698)). CI runs that only when someone starts it (`.github/workflows/sql-server.yml`).
 
-- `spike/`: the package 1 prototype and the harness that runs its checks against the Docker QGIS Server.
+- `spike/`: the first prototype and the harness that runs its checks against the Docker QGIS Server.

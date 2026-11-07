@@ -6,5 +6,5 @@ description=Per-person access to QGIS Server layers, features and fields, from a
 about=Castlegate checks each request's bearer token and answers QGIS Server's access-control questions from a rules table that is a layer of the project. It refuses services other than WMS and WFS, and saves that set a field the person may not change.
 version=0.1.0
 author=Vectoria
-email=noreply@vectoria.invalid
+email=simon.okeefe@vectoria.com.au
 server=True

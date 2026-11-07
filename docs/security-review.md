@@ -1,6 +1,6 @@
-# The security review: a brief for the reviewer
+# Reviewing Castlegate's security
 
-Castlegate Server is to be reviewed by someone outside Vectoria before a client relies on it, and the report is to be available to clients. This page is the brief for that review: what Castlegate must hold to, who it guards against, where to read closest, and what is already known.
+Castlegate Server has not yet been reviewed by anyone outside Vectoria, and reviews are welcome. This page is the brief for a reviewer: what Castlegate must hold to, who it guards against, where to read closest, and what is already known. Report what you find as [`SECURITY.md`](../SECURITY.md) says.
 
 What the plugin does is in the [README](../README.md), the rules table is in [`rules-table.md`](rules-table.md), and what it does not protect is in [`limits.md`](limits.md). Anything on the limits page is known and accepted, unless the reviewer finds it is worse than the page says.
 
@@ -30,7 +30,7 @@ Read closest:
 - **`core/rsa.py`, `core/tokens.py` and `core/keys.py`.** The signature check uses only what Python ships, with no cryptography package, because none is in QGIS Server's Python on Windows or in its Docker image.
 - **`server/castlegate_server/access_filter.py`.** QGIS Server keeps one copy of a project for every request, so its answers must change nothing on a layer, and must depend only on the person on the request in hand.
 
-Not in scope: `spike/`, the package 1 prototype. The tests are not in scope, but are the quickest way to try something against a real QGIS Server.
+Not in scope: `spike/`, the first prototype. The tests are not in scope, but are the quickest way to try something against a real QGIS Server.
 
 ## Running it
 
@@ -38,7 +38,7 @@ The README gives the commands. The unit tests need Python 3.12 or later. The tes
 
 ## What a first reading found
 
-Before this review, Vectoria ran its own reading of the plugin and the core. It is not an independent review. What it changed:
+Vectoria ran its own reading of the plugin and the core in November 2026. It is not an independent review. What it changed:
 
 - A failed refresh of the signing keys no longer keeps them for ever: after a week without a fetch that worked, every sign-in is refused.
 - An answer from the issuer that is not a key set, or holds no RS256 key, no longer replaces the keys held.
@@ -50,17 +50,16 @@ Before this review, Vectoria ran its own reading of the plugin and the core. It 
 
 ## Not yet checked
 
-These are open, and are the places most worth the reviewer's time after the save reader:
+These are open, and are the places most worth a reviewer's time after the save reader:
 
 - Any way a request can name a field or call a function that `request_expressions.py` does not read, and whether any function in its `FUNCTIONS` list reads beyond the feature being tested.
 - WMS GetPrint, and what a print layout's tables and labels show.
 - What GetLegendGraphic and GetStyles reveal beyond a style's own values.
 - Several worker processes serving one server under load.
-- Real Entra tokens, including a person in more groups than a token lists.
+- A person in more groups than an Entra token lists. Real Entra tokens from one tenant were tested once, against the Docker profile.
 - QGIS 4 on Windows, and the Apache and nginx profiles, which are guides only.
 
 ## What we ask for
 
-- Findings with how severe each is and how to reproduce it, ideally as a check in `tests/server/run.mjs` or a unit test.
+- Findings with how severe each is and how to reproduce it, ideally as a check in `tests/server/run.mjs` or a unit test, reported privately ([`SECURITY.md`](../SECURITY.md)).
 - A second look at the fixes.
-- A report Vectoria may give to clients.
