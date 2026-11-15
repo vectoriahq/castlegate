@@ -3,7 +3,7 @@
 Writes into /io/data:
 - castlegate.gpkg: the layers assets, restricted, big and site_notes, and two rules
   tables, castlegate_rules and castlegate_rules_b;
-- castlegate.qgs: the layers and castlegate_rules, named in the castlegate_rules_layer
+- castlegate.qgs: the layers and castlegate_rules, named in the castlegate_rules_table
   project variable;
 - castlegate-b.qgs: the same layers with castlegate_rules_b;
 - castlegate-norules.qgs: the layers and no project variable;
@@ -77,8 +77,8 @@ def point_layer(rows):
 def rules_layer(rows):
     layer = QgsVectorLayer("None", "tmp", "memory")
     columns = [
-        "kind", "who", "layer", "can_see", "can_add", "can_change", "can_move", "can_delete",
-        "see_filter", "edit_filter", "hidden_fields", "readonly_fields",
+        "who_type", "who", "layer", "can_read", "can_insert", "can_update_attributes", "can_update_geometry", "can_delete",
+        "read_filter", "edit_filter", "hidden_fields", "readonly_fields",
     ]
     layer.dataProvider().addAttributes([QgsField(c, TEXT) for c in columns])
     layer.updateFields()
@@ -171,7 +171,7 @@ def project(path, rules_table=None, variable=None):
         # Published in every service on purpose: the plugin must refuse it whatever the settings say.
         ids.append(rules.id())
     if variable:
-        QgsExpressionContextUtils.setProjectVariable(p, "castlegate_rules_layer", variable)
+        QgsExpressionContextUtils.setProjectVariable(p, "castlegate_rules_table", variable)
     p.writeEntry("WMSServiceCapabilities", "/", True)
     p.writeEntry("WMSServiceTitle", "/", "Castlegate tests")
     p.writeEntry("WMSExtent", "/", ["144.4", "-38.3", "145.6", "-37.7"])

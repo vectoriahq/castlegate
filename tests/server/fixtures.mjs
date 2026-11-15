@@ -17,31 +17,31 @@ export const people = {
   frank: { oid: "ffffffff-0000-4000-8000-00000000000f", preferred_username: "frank@example.org" },
 };
 
-const all = { can_see: true, can_add: true, can_change: true, can_move: true, can_delete: true };
+const all = { can_read: true, can_insert: true, can_update_attributes: true, can_update_geometry: true, can_delete: true };
 export const RULES = {
   a: [
-    { kind: "person", who: "alice@example.org", layer: "assets", ...all, edit_filter: '"owner" = {{email}}' },
-    { kind: "person", who: "alice@example.org", layer: "restricted", can_see: true },
-    { kind: "person", who: "alice@example.org", layer: "big", can_see: true, see_filter: '"owner" = {{email}}' },
-    { kind: "person", who: "alice@example.org", layer: "site notes", can_see: true, can_change: true },
+    { who_type: "user", who: "alice@example.org", layer: "assets", ...all, edit_filter: '"owner" = {{email}}' },
+    { who_type: "user", who: "alice@example.org", layer: "restricted", can_read: true },
+    { who_type: "user", who: "alice@example.org", layer: "big", can_read: true, read_filter: '"owner" = {{email}}' },
+    { who_type: "user", who: "alice@example.org", layer: "site notes", can_read: true, can_update_attributes: true },
     // A row naming the rules layer itself: the plugin must still never serve it.
-    { kind: "person", who: "alice@example.org", layer: "castlegate_rules", ...all },
+    { who_type: "user", who: "alice@example.org", layer: "castlegate_rules", ...all },
     {
-      kind: "person", who: "bob@example.org", layer: "assets", can_see: true, can_change: true,
-      see_filter: '"owner" = {{email}}', edit_filter: '"owner" = {{email}}', hidden_fields: "secret", readonly_fields: "status",
+      who_type: "user", who: "bob@example.org", layer: "assets", can_read: true, can_update_attributes: true,
+      read_filter: '"owner" = {{email}}', edit_filter: '"owner" = {{email}}', hidden_fields: "secret", readonly_fields: "status",
     },
-    { kind: "person", who: "bob@example.org", layer: "site notes", can_see: true },
-    { kind: "group", who: G, layer: "assets", can_see: true },
+    { who_type: "user", who: "bob@example.org", layer: "site notes", can_read: true },
+    { who_type: "group", who: G, layer: "assets", can_read: true },
     // A group row granting deletes with no filter must not widen carol's changes.
-    { kind: "group", who: G, layer: "assets", can_delete: true },
-    { kind: "person", who: "carol@example.org", layer: "assets", can_change: true, edit_filter: '"owner" = {{email}}' },
-    { kind: "person", who: people.erin.oid, layer: "assets", can_see: true, can_move: true },
-    { kind: "role", who: "alice@example.org", layer: "big", ...all },
-    { kind: "person", who: "alice@example.org", layer: "big", ...all, see_filter: '"owner" = (' },
+    { who_type: "group", who: G, layer: "assets", can_delete: true },
+    { who_type: "user", who: "carol@example.org", layer: "assets", can_update_attributes: true, edit_filter: '"owner" = {{email}}' },
+    { who_type: "user", who: people.erin.oid, layer: "assets", can_read: true, can_update_geometry: true },
+    { who_type: "role", who: "alice@example.org", layer: "big", ...all },
+    { who_type: "user", who: "alice@example.org", layer: "big", ...all, read_filter: '"owner" = (' },
   ],
   b: [
-    { kind: "person", who: "bob@example.org", layer: "restricted", can_see: true },
-    { kind: "person", who: "bob@example.org", layer: "assets", can_see: true },
+    { who_type: "user", who: "bob@example.org", layer: "restricted", can_read: true },
+    { who_type: "user", who: "bob@example.org", layer: "assets", can_read: true },
   ],
 };
 

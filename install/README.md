@@ -36,4 +36,4 @@ Until `CASTLEGATE_ISSUER`, `CASTLEGATE_AUDIENCE` and `CASTLEGATE_SCOPE` are all 
 
 ## The project
 
-Each project the server opens names its rules layer in the project variable `castlegate_rules_layer`. The table's columns are in [`docs/rules-table.md`](../docs/rules-table.md), and what the plugin does not protect is in [`docs/limits.md`](../docs/limits.md).
+Each project the server opens names its rules table in the project variable `castlegate_rules_table`. The table's columns are in [`docs/rules-table.md`](../docs/rules-table.md), and what the plugin does not protect is in [`docs/limits.md`](../docs/limits.md).

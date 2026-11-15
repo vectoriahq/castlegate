@@ -1,8 +1,8 @@
 """The rules table's shape, and how the rows that name a person combine.
 
-Each row names a person or a group, one published layer, what they may do there,
+Each row names a user or a group, one published layer, what they may do there,
 and optionally which features they see, which they may edit, and which fields
-they cannot see or cannot change. There are no deny rows: a person may do
+they cannot read or cannot update. There are no deny rows: a person may do
 anything any of their rows allows (see `combine`).
 
 A row that cannot be read exactly is left out, and its problem is reported.
@@ -16,22 +16,22 @@ from dataclasses import dataclass
 from .tokens import normal_email, normal_id
 
 COLUMNS = (
-    "kind",
+    "who_type",
     "who",
     "layer",
-    "can_see",
-    "can_add",
-    "can_change",
-    "can_move",
+    "can_read",
+    "can_insert",
+    "can_update_attributes",
+    "can_update_geometry",
     "can_delete",
-    "see_filter",
+    "read_filter",
     "edit_filter",
     "hidden_fields",
     "readonly_fields",
 )
-RIGHTS = ("see", "add", "change", "move", "delete")
-EDIT_RIGHTS = frozenset(("add", "change", "move", "delete"))
-WRITE_RIGHTS = frozenset(("add", "change"))
+RIGHTS = ("read", "insert", "update_attributes", "update_geometry", "delete")
+EDIT_RIGHTS = frozenset(("insert", "update_attributes", "update_geometry", "delete"))
+WRITE_RIGHTS = frozenset(("insert", "update_attributes"))
 
 _TRUE = {"true", "yes", "1"}
 _FALSE = {"false", "no", "0", ""}
@@ -45,17 +45,17 @@ class RowError(ValueError):
 
 @dataclass(frozen=True)
 class Row:
-    kind: str  # "person" or "group"
+    who_type: str  # "user" or "group"
     who: str  # an email as normal_email gives it, or an id as normal_id gives it
     layer: str
     rights: frozenset
-    see_filter: str  # "" means every feature
+    read_filter: str  # "" means every feature
     edit_filter: str  # "" means every feature
     hidden: frozenset
     readonly: frozenset
 
     def names(self, person):
-        if self.kind == "group":
+        if self.who_type == "group":
             return self.who in person.groups
         if "@" in self.who:
             return bool(person.email) and self.who == person.email
@@ -109,25 +109,25 @@ def _filter(record, name):
 
 def parse_row(record):
     """A Row from one record of the table, a mapping of column name to value; or raise RowError."""
-    kind = _text(record, "kind").lower()
-    if kind not in ("person", "group"):
-        raise RowError("kind is not person or group")
+    who_type = _text(record, "who_type").lower()
+    if who_type not in ("user", "group"):
+        raise RowError("who_type is not user or group")
     who = _text(record, "who")
     if not who:
         raise RowError("who is empty")
-    if kind == "group" and "@" in who:
+    if who_type == "group" and "@" in who:
         raise RowError("a group is named by its object ID, not an email")
-    who = normal_email(who) if kind == "person" and "@" in who else normal_id(who)
+    who = normal_email(who) if who_type == "user" and "@" in who else normal_id(who)
     layer = _text(record, "layer")
     if not layer:
         raise RowError("layer is empty")
     rights = frozenset(right for right in RIGHTS if _flag(record, "can_" + right))
     return Row(
-        kind=kind,
+        who_type=who_type,
         who=who,
         layer=layer,
         rights=rights,
-        see_filter=_filter(record, "see_filter"),
+        read_filter=_filter(record, "read_filter"),
         edit_filter=_filter(record, "edit_filter"),
         hidden=_fields(record, "hidden_fields"),
         readonly=_fields(record, "readonly_fields"),
@@ -151,13 +151,13 @@ class Answer:
 
     rights: frozenset
     # A QGIS expression limiting the features they see, "" for every feature, or "FALSE" when not granted.
-    see_filter: str
-    # For each of add, change, move and delete: a QGIS expression limiting the
+    read_filter: str
+    # For each of insert, update_attributes, update_geometry and delete: a QGIS expression limiting the
     # features it applies to, "" for every feature, or "FALSE" when not granted.
     edit_filters: dict
     # Fields whose values they may not see.
     hidden: frozenset
-    # For add and change, where granted: the fields they may not set, hidden ones and read-only ones.
+    # For insert and update_attributes, where granted: the fields they may not set, hidden ones and read-only ones.
     blocked: dict
 
     @property
@@ -168,13 +168,13 @@ class Answer:
         return self.edit_filters.get(right, "FALSE")
 
     def blocked_on(self, right):
-        """The fields that may not be set on an add or a change, or None when that right is not granted."""
+        """The fields that may not be set on an insert or an attribute update, or None when that right is not granted."""
         return self.blocked.get(right)
 
 
 NOTHING = Answer(
     rights=frozenset(),
-    see_filter="FALSE",
+    read_filter="FALSE",
     edit_filters={right: "FALSE" for right in sorted(EDIT_RIGHTS)},
     hidden=frozenset(),
     blocked={},
@@ -215,10 +215,11 @@ def combine(rows, person, quote):
     """The Answer for one person from the rows naming them on one layer; the most permissive wins.
 
     A row widens only what it grants, and each right is combined over the rows
-    granting that right alone. A row's see filter counts only for seeing; its
-    hidden fields for seeing and for any add or change it grants; its edit
-    filter only for the edits it grants, each separately; its read-only fields
-    only for an add if it grants add, and for a change if it grants change. So
+    granting that right alone. A row's read filter counts only for reading; its
+    hidden fields for reading and for any insert or attribute update it grants;
+    its edit filter only for the edits it grants, each separately; its read-only
+    fields only for an insert if it grants insert, and for an attribute update if
+    it grants update_attributes. So
     a row granting one thing cannot loosen the conditions
     another row put on something else.
     """
@@ -239,9 +240,9 @@ def combine(rows, person, quote):
 
     return Answer(
         rights=rights,
-        see_filter=filter_for("see", "see_filter"),
+        read_filter=filter_for("read", "read_filter"),
         edit_filters={right: filter_for(right, "edit_filter") for right in sorted(EDIT_RIGHTS)},
-        hidden=_all_of(row.hidden for row in granting("see")),
+        hidden=_all_of(row.hidden for row in granting("read")),
         blocked={
             right: _all_of(row.hidden | row.readonly for row in granting(right))
             for right in sorted(WRITE_RIGHTS & rights)
@@ -266,6 +267,6 @@ class Rules:
         found = set()
         for layer in self._by_layer:
             answer = self.answer(person, layer, quote)
-            if "see" in answer.rights:
+            if "read" in answer.rights:
                 found |= answer.hidden
         return frozenset(found)

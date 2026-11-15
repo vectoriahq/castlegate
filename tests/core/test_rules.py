@@ -11,7 +11,7 @@ NO_EMAIL = Person(id="cccc", email="", groups=frozenset({"g1"}))
 
 
 def row(**values):
-    base = {"kind": "person", "who": "alice@example.org", "layer": "assets", "can_see": True}
+    base = {"who_type": "user", "who": "alice@example.org", "layer": "assets", "can_read": True}
     base.update(values)
     return base
 
@@ -26,24 +26,24 @@ class Reading(unittest.TestCase):
     def test_a_full_row(self):
         r = parse_row(
             {
-                "kind": " Person ",
+                "who_type": " User ",
                 "who": " Alice@Example.org ",
                 "layer": "assets",
-                "can_see": "yes",
-                "can_add": 1,
-                "can_change": "TRUE",
-                "can_move": False,
+                "can_read": "yes",
+                "can_insert": 1,
+                "can_update_attributes": "TRUE",
+                "can_update_geometry": False,
                 "can_delete": None,
-                "see_filter": ' "owner" = {{email}} ',
+                "read_filter": ' "owner" = {{email}} ',
                 "edit_filter": None,
                 "hidden_fields": "secret, notes ,",
                 "readonly_fields": ["status"],
             }
         )
-        self.assertEqual(r.kind, "person")
+        self.assertEqual(r.who_type, "user")
         self.assertEqual(r.who, "alice@example.org")
-        self.assertEqual(r.rights, frozenset({"see", "add", "change"}))
-        self.assertEqual(r.see_filter, '"owner" = {{email}}')
+        self.assertEqual(r.rights, frozenset({"read", "insert", "update_attributes"}))
+        self.assertEqual(r.read_filter, '"owner" = {{email}}')
         self.assertEqual(r.edit_filter, "")
         self.assertEqual(r.hidden, frozenset({"secret", "notes"}))
         self.assertEqual(r.readonly, frozenset({"status"}))
@@ -52,14 +52,14 @@ class Reading(unittest.TestCase):
         rows, problems = parse_rows(
             [
                 row(),
-                row(kind="role"),
+                row(who_type="role"),
                 row(who=""),
                 row(layer=None),
-                row(can_see="maybe"),
-                row(can_add=2),
-                row(kind="group", who="team@example.org"),
-                row(see_filter="{{name}} = 1"),
-                row(see_filter="{{email"),
+                row(can_read="maybe"),
+                row(can_insert=2),
+                row(who_type="group", who="team@example.org"),
+                row(read_filter="{{name}} = 1"),
+                row(read_filter="{{email"),
                 row(hidden_fields=7),
                 row(hidden_fields=["a", 1]),
                 row(who=5),
@@ -70,13 +70,13 @@ class Reading(unittest.TestCase):
             [p.split(":")[0] for p in problems],
             ["row %d" % n for n in range(2, 13)],
         )
-        self.assertIn("kind is not person or group", problems[0])
+        self.assertIn("who_type is not user or group", problems[0])
         self.assertIn("{{name}}", problems[6])
 
     def test_a_row_naming_a_person_by_email_object_id_or_group(self):
         by_email = parse_row(row(who="alice@example.org"))
         by_id = parse_row(row(who="aaaa"))
-        by_group = parse_row(row(kind="group", who="g1"))
+        by_group = parse_row(row(who_type="group", who="g1"))
         self.assertTrue(by_email.names(ALICE) and by_id.names(ALICE) and by_group.names(ALICE))
         self.assertFalse(by_email.names(BOB) or by_id.names(BOB))
         self.assertTrue(by_group.names(BOB))
@@ -85,7 +85,7 @@ class Reading(unittest.TestCase):
         oid, group = "aaaaaaaa-0000-4000-8000-00000000000a", "11111111-0000-4000-8000-000000000001"
         person = Person(id=oid, email="", groups=frozenset({group}))
         self.assertTrue(parse_row(row(who=oid.upper())).names(person))
-        self.assertTrue(parse_row(row(kind="group", who=group.upper())).names(person))
+        self.assertTrue(parse_row(row(who_type="group", who=group.upper())).names(person))
 
     def test_an_id_that_is_not_a_guid_matches_exactly(self):
         # Review finding: an OpenID Connect sub is case-sensitive, so lower-casing
@@ -93,8 +93,8 @@ class Reading(unittest.TestCase):
         person = Person(id="AbC", email="", groups=frozenset({"Editors"}))
         self.assertTrue(parse_row(row(who="AbC")).names(person))
         self.assertFalse(parse_row(row(who="abc")).names(person))
-        self.assertTrue(parse_row(row(kind="group", who="Editors")).names(person))
-        self.assertFalse(parse_row(row(kind="group", who="editors")).names(person))
+        self.assertTrue(parse_row(row(who_type="group", who="Editors")).names(person))
+        self.assertFalse(parse_row(row(who_type="group", who="editors")).names(person))
 
     def test_only_a_to_z_are_lower_cased_in_an_email(self):
         # Review finding: str.lower() turns the Kelvin sign into k, so a row for
@@ -115,8 +115,8 @@ class HiddenAnywhere(unittest.TestCase):
         rows, problems = parse_rows([
             row(layer="assets", hidden_fields="secret"),
             row(layer="notes", hidden_fields="author, cost"),
-            row(layer="notes", can_see=False, can_add=True, hidden_fields="other"),
-            row(layer="unseen", can_see=False, can_add=True, hidden_fields="never"),
+            row(layer="notes", can_read=False, can_insert=True, hidden_fields="other"),
+            row(layer="unseen", can_read=False, can_insert=True, hidden_fields="never"),
             row(who="bob@example.org", layer="assets", hidden_fields="bobs"),
         ])
         self.assertEqual(problems, [])
@@ -149,45 +149,45 @@ class Combining(unittest.TestCase):
         self.assertTrue(NOTHING.nothing)
 
     def test_a_row_granting_nothing_means_nothing(self):
-        self.assertEqual(answer([row(can_see=False)]), NOTHING)
+        self.assertEqual(answer([row(can_read=False)]), NOTHING)
 
     def test_rights_add_up(self):
-        a = answer([row(can_add=True), row(kind="group", who="g1", can_see=False, can_delete=True)])
-        self.assertEqual(a.rights, frozenset({"see", "add", "delete"}))
+        a = answer([row(can_insert=True), row(who_type="group", who="g1", can_read=False, can_delete=True)])
+        self.assertEqual(a.rights, frozenset({"read", "insert", "delete"}))
 
-    def test_see_filters_combine_with_or(self):
-        a = answer([row(see_filter='"owner" = {{email}}'), row(kind="group", who="g1", see_filter='"public"')])
-        self.assertEqual(a.see_filter, '("owner" = \'alice@example.org\') OR ("public")')
+    def test_read_filters_combine_with_or(self):
+        a = answer([row(read_filter='"owner" = {{email}}'), row(who_type="group", who="g1", read_filter='"public"')])
+        self.assertEqual(a.read_filter, '("owner" = \'alice@example.org\') OR ("public")')
 
-    def test_an_empty_see_filter_means_every_feature_and_wins(self):
-        a = answer([row(see_filter='"owner" = {{email}}'), row(kind="group", who="g1")])
-        self.assertEqual(a.see_filter, "")
+    def test_an_empty_read_filter_means_every_feature_and_wins(self):
+        a = answer([row(read_filter='"owner" = {{email}}'), row(who_type="group", who="g1")])
+        self.assertEqual(a.read_filter, "")
 
-    def test_one_see_filter_is_used_as_it_is(self):
-        self.assertEqual(answer([row(see_filter='"public"')]).see_filter, '"public"')
+    def test_one_read_filter_is_used_as_it_is(self):
+        self.assertEqual(answer([row(read_filter='"public"')]).read_filter, '"public"')
 
     def test_a_row_that_does_not_let_the_person_see_does_not_widen_what_they_see(self):
         a = answer(
             [
-                row(see_filter='"owner" = {{email}}', hidden_fields="secret"),
-                row(kind="group", who="g1", can_see=False, can_delete=True),
+                row(read_filter='"owner" = {{email}}', hidden_fields="secret"),
+                row(who_type="group", who="g1", can_read=False, can_delete=True),
             ]
         )
-        self.assertEqual(a.see_filter, "\"owner\" = 'alice@example.org'")
+        self.assertEqual(a.read_filter, "\"owner\" = 'alice@example.org'")
         self.assertEqual(a.hidden, frozenset({"secret"}))
 
     def test_no_seeing_row_means_no_features_seen(self):
-        self.assertEqual(answer([row(can_see=False, can_add=True)]).see_filter, "FALSE")
+        self.assertEqual(answer([row(can_read=False, can_insert=True)]).read_filter, "FALSE")
 
     def test_edit_filters_come_from_rows_granting_that_edit(self):
         a = answer(
             [
-                row(can_change=True, edit_filter='"owner" = {{email}}'),
-                row(kind="group", who="g1", edit_filter=""),
+                row(can_update_attributes=True, edit_filter='"owner" = {{email}}'),
+                row(who_type="group", who="g1", edit_filter=""),
             ]
         )
-        self.assertEqual(a.edit_filter("change"), "\"owner\" = 'alice@example.org'")
-        for right in ("add", "move", "delete"):
+        self.assertEqual(a.edit_filter("update_attributes"), "\"owner\" = 'alice@example.org'")
+        for right in ("insert", "update_geometry", "delete"):
             self.assertEqual(a.edit_filter(right), "FALSE")
 
     def test_a_row_granting_one_edit_does_not_widen_another(self):
@@ -195,58 +195,58 @@ class Combining(unittest.TestCase):
         # delete-only row with no filter open changes to every feature.
         a = answer(
             [
-                row(can_change=True, edit_filter='"owner" = {{email}}'),
-                row(kind="group", who="g1", can_delete=True, edit_filter=""),
+                row(can_update_attributes=True, edit_filter='"owner" = {{email}}'),
+                row(who_type="group", who="g1", can_delete=True, edit_filter=""),
             ]
         )
-        self.assertEqual(a.edit_filter("change"), "\"owner\" = 'alice@example.org'")
-        self.assertEqual(a.edit_filter("move"), "FALSE")
+        self.assertEqual(a.edit_filter("update_attributes"), "\"owner\" = 'alice@example.org'")
+        self.assertEqual(a.edit_filter("update_geometry"), "FALSE")
         self.assertEqual(a.edit_filter("delete"), "")
-        a = answer([row(can_add=True), row(kind="group", who="g1", can_change=True, edit_filter='"public"')])
-        self.assertEqual(a.edit_filter("add"), "")
-        self.assertEqual(a.edit_filter("change"), '"public"')
+        a = answer([row(can_insert=True), row(who_type="group", who="g1", can_update_attributes=True, edit_filter='"public"')])
+        self.assertEqual(a.edit_filter("insert"), "")
+        self.assertEqual(a.edit_filter("update_attributes"), '"public"')
 
     def test_no_editing_row_means_no_features_edited(self):
         a = answer([row()])
-        for right in ("add", "change", "move", "delete"):
+        for right in ("insert", "update_attributes", "update_geometry", "delete"):
             self.assertEqual(a.edit_filter(right), "FALSE")
 
     def test_a_field_is_hidden_only_where_every_seeing_row_hides_it(self):
-        a = answer([row(hidden_fields="secret,notes"), row(kind="group", who="g1", hidden_fields="secret")])
+        a = answer([row(hidden_fields="secret,notes"), row(who_type="group", who="g1", hidden_fields="secret")])
         self.assertEqual(a.hidden, frozenset({"secret"}))
-        a = answer([row(hidden_fields="secret"), row(kind="group", who="g1")])
+        a = answer([row(hidden_fields="secret"), row(who_type="group", who="g1")])
         self.assertEqual(a.hidden, frozenset())
 
     def test_a_field_is_blocked_only_where_every_row_granting_that_write_blocks_it(self):
         a = answer(
             [
-                row(can_change=True, hidden_fields="secret", readonly_fields="status"),
-                row(kind="group", who="g1", can_change=True, readonly_fields="status,notes"),
-                row(kind="group", who="g1", can_add=True, readonly_fields=""),
-                row(kind="group", who="g1", can_see=True, readonly_fields=""),
+                row(can_update_attributes=True, hidden_fields="secret", readonly_fields="status"),
+                row(who_type="group", who="g1", can_update_attributes=True, readonly_fields="status,notes"),
+                row(who_type="group", who="g1", can_insert=True, readonly_fields=""),
+                row(who_type="group", who="g1", can_read=True, readonly_fields=""),
             ]
         )
-        self.assertEqual(a.blocked_on("change"), frozenset({"status"}))
-        self.assertEqual(a.blocked_on("add"), frozenset())
+        self.assertEqual(a.blocked_on("update_attributes"), frozenset({"status"}))
+        self.assertEqual(a.blocked_on("insert"), frozenset())
         self.assertEqual(a.hidden, frozenset())
 
     def test_an_add_row_does_not_unblock_a_field_for_changes(self):
-        a = answer([row(can_change=True, readonly_fields="status"), row(kind="group", who="g1", can_add=True)])
-        self.assertEqual(a.blocked_on("change"), frozenset({"status"}))
-        self.assertEqual(a.blocked_on("add"), frozenset())
+        a = answer([row(can_update_attributes=True, readonly_fields="status"), row(who_type="group", who="g1", can_insert=True)])
+        self.assertEqual(a.blocked_on("update_attributes"), frozenset({"status"}))
+        self.assertEqual(a.blocked_on("insert"), frozenset())
 
     def test_no_blocked_list_for_a_write_not_granted(self):
-        a = answer([row(can_change=True)])
-        self.assertIsNone(a.blocked_on("add"))
-        self.assertIsNone(NOTHING.blocked_on("change"))
+        a = answer([row(can_update_attributes=True)])
+        self.assertIsNone(a.blocked_on("insert"))
+        self.assertIsNone(NOTHING.blocked_on("update_attributes"))
 
     def test_hidden_fields_are_blocked_on_writes(self):
-        a = answer([row(can_change=True, hidden_fields="secret")])
-        self.assertEqual(a.blocked_on("change"), frozenset({"secret"}))
+        a = answer([row(can_update_attributes=True, hidden_fields="secret")])
+        self.assertEqual(a.blocked_on("update_attributes"), frozenset({"secret"}))
 
     def test_a_filter_needing_a_missing_email_grants_no_features(self):
-        a = answer([row(kind="group", who="g1", see_filter='"owner" = {{email}}')], person=NO_EMAIL)
-        self.assertEqual(a.see_filter, "FALSE")
+        a = answer([row(who_type="group", who="g1", read_filter='"owner" = {{email}}')], person=NO_EMAIL)
+        self.assertEqual(a.read_filter, "FALSE")
 
     def test_layer_names_are_matched_exactly(self):
         self.assertEqual(answer([row(layer="Assets")]), NOTHING)

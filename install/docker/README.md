@@ -11,7 +11,7 @@ The `qgis/qgis-server` image with the plugin built in. The plugin's own tests ru
 ## Setting it up
 
 1. Unzip the release zip here, so this folder holds `castlegate_server/` beside the `Dockerfile`.
-2. Put your projects and their data in `data/`. Each project names its rules layer in the `castlegate_rules_layer` project variable ([`docs/rules-table.md`](../../docs/rules-table.md)).
+2. Put your projects and their data in `data/`. Each project names its rules table in the `castlegate_rules_table` project variable ([`docs/rules-table.md`](../../docs/rules-table.md)).
 3. Make a `.env` file beside `compose.yaml`:
 
    ```text

@@ -123,7 +123,7 @@ async function startSqlServer() {
   sql("CREATE DATABASE castlegate", { db: "master" });
   const data = "fid INT IDENTITY(1,1) PRIMARY KEY, name NVARCHAR(100), owner NVARCHAR(100), status NVARCHAR(20), secret NVARCHAR(100), geom geometry";
   for (const t of DATA_TABLES) sql(`CREATE TABLE dbo.${t} (${data}); CREATE SPATIAL INDEX ${t}_geom ON dbo.${t}(geom) WITH (BOUNDING_BOX = (144, -39, 146, -37));`);
-  const text = ["kind", "who", "layer", "can_see", "can_add", "can_change", "can_move", "can_delete", "see_filter", "edit_filter", "hidden_fields", "readonly_fields"]
+  const text = ["who_type", "who", "layer", "can_read", "can_insert", "can_update_attributes", "can_update_geometry", "can_delete", "read_filter", "edit_filter", "hidden_fields", "readonly_fields"]
     .map((c) => `${c} NVARCHAR(400)`)
     .join(", ");
   for (const t of RULES_TABLES) sql(`CREATE TABLE dbo.${t} (fid INT IDENTITY(1,1) PRIMARY KEY, ${text})`);
@@ -293,7 +293,7 @@ async function checkStatus() {
   );
   const s2 = await status("alice", { map: MAP_NONE });
   const body2 = JSON.parse(s2.text || "{}");
-  record("status-no-rules", body2.rules?.loaded === false && /castlegate_rules_layer/.test(body2.rules?.error ?? ""), `a project with no rules variable: ${JSON.stringify(body2.rules)}`);
+  record("status-no-rules", body2.rules?.loaded === false && /castlegate_rules_table/.test(body2.rules?.error ?? ""), `a project with no rules variable: ${JSON.stringify(body2.rules)}`);
   const unknown = await req({ SERVICE: "NOSUCH", REQUEST: "Status" }, { who: "alice" });
   record("unknown-service-refused", unknown.status === 403, `status ${unknown.status}: ${short(unknown.text)}`);
 }
@@ -432,7 +432,7 @@ async function checkSaves() {
   const mixed = await post("bob", update("assets", 4, { name: "fine" }) + update("assets", 4, { secret: "not fine" }));
   record("field-refusal-covers-the-whole-transaction", !succeeded(mixed) && (await feature("assets", 4)).properties.name === "asset 3", `bob's transaction with one allowed and one refused update: status ${mixed.status}: ${short(mixed.text)}`);
 
-  // Changing details and moving shapes are separate rights.
+  // Updating attributes and updating geometry are separate rights.
   const erinMove = await post("erin", update("assets", 2, { geometry: POINT(145.0, -37.9) }));
   record("move-only-may-move", succeeded(erinMove) && coords(await feature("assets", 2)) === "145.000,-37.900", `erin, who may only move, moves a feature: ${short(erinMove.text)}`);
   const erinName = await post("erin", update("assets", 2, { name: "erin" }));

@@ -1,9 +1,9 @@
-"""The rules of the project QGIS Server opened, read from a layer of that project.
+"""The rules of the project QGIS Server opened, read from a table added to that project.
 
-The project names its rules layer in the project variable
-`castlegate_rules_layer`, so the table rides the project's own data connections
+The project names its rules table, as it appears in the Layers panel, in the
+project variable `castlegate_rules_table`, so the table rides the project's own data connections
 and each project on a server keeps its own rules. Each worker process keeps its
-own copy per project and reads the layer again once the copy is
+own copy per project and reads the table again once the copy is
 `MAX_AGE_SECONDS` old, because a database table has no stamp to watch.
 """
 
@@ -15,7 +15,7 @@ from qgis.core import QgsExpression, QgsExpressionContextUtils, QgsMapLayer, Qgs
 from .core import rules as core_rules
 from .core.tokens import Person
 
-VARIABLE = "castlegate_rules_layer"
+VARIABLE = "castlegate_rules_table"
 MAX_AGE_SECONDS = 30
 
 # Stand-in values for checking that a filter parses once the placeholders are filled in.
@@ -50,7 +50,7 @@ def _value(v):
 
 
 def _check_expressions(row):
-    for column in ("see_filter", "edit_filter"):
+    for column in ("read_filter", "edit_filter"):
         text = getattr(row, column)
         if text:
             probe = QgsExpression(core_rules.substitute(text, _PROBE, QgsExpression.quotedString))
@@ -70,7 +70,7 @@ def read(project):
         name = QgsExpressionContextUtils.projectScope(project).variable(VARIABLE)
         name = _value(name)
         if not isinstance(name, str) or not name.strip():
-            found.error = "the project has no %s variable naming its rules layer" % VARIABLE
+            found.error = "the project has no %s variable naming its rules table" % VARIABLE
             return found
         found.layer_name = name.strip()
         layers = project.mapLayersByName(found.layer_name)
@@ -80,12 +80,12 @@ def read(project):
         layer = layers[0]
         found.layer_id = layer.id()
         if not isinstance(layer, QgsVectorLayer) or layer.type() != QgsMapLayer.LayerType.VectorLayer or not layer.isValid():
-            found.error = "the rules layer %s is not a readable table" % found.layer_name
+            found.error = "the rules table %s cannot be read" % found.layer_name
             return found
         names = layer.fields().names()
-        missing = [c for c in ("kind", "who", "layer") if c not in names]
+        missing = [c for c in ("who_type", "who", "layer") if c not in names]
         if missing:
-            found.error = "the rules layer has no %s column" % ", ".join(missing)
+            found.error = "the rules table has no %s column" % ", ".join(missing)
             return found
         columns = [c for c in core_rules.COLUMNS if c in names]
         records = []
@@ -104,7 +104,7 @@ def read(project):
         found.problems = problems
     except Exception as e:  # noqa: BLE001 - any failure leaves the project with no rules
         found.rules = None
-        found.error = "the rules layer could not be read (%s)" % type(e).__name__
+        found.error = "the rules table could not be read (%s)" % type(e).__name__
     return found
 
 
