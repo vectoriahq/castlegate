@@ -28,7 +28,7 @@ QGIS Server publishes a project's layers to anyone who can reach it. It has a pl
 
 Castlegate is that plugin. It keeps the QGIS project as the one place a server's layers are set up:
 
-- **The rules are a layer of the project,** a table the administrator edits in QGIS like any other. So each project has its own rules, and they work whatever the layers are stored in: SQL Server, PostGIS, a GeoPackage, or anything else QGIS can open.
+- **The rules are a layer of the project,** a table the administrator edits in QGIS like any other ([Setting up a project](#setting-up-a-project)). So each project has its own rules, and they work whatever the layers are stored in: SQL Server, PostGIS, a GeoPackage, or anything else QGIS can open.
 - **Staff need no database login of their own.** QGIS Server reads the data with one account, and Castlegate decides what each person gets from it.
 - **A rule is a QGIS expression,** the same kind a QGIS user already writes for a filter or a label.
 - **Sign-in is standard OpenID Connect.** Castlegate checks the token each request carries: its signature, issuer, audience, scope, expiry and, where set, tenant. Microsoft Entra ID is the provider it has been tested with.
@@ -66,6 +66,24 @@ Three rows from a made-up council's rules, for a `trees` layer and a `requests` 
 - **Ana** sees the requests from the North ward, without the caller's phone number, and may not edit them.
 
 `{{email}}` stands for the signed-in person's email, and Castlegate quotes it itself. A person in several groups gets everything any of their rows allows: there are no rows that take a right away. [`docs/rules-table.md`](docs/rules-table.md) gives every column and how rows combine.
+
+## Setting up a project
+
+A GIS administrator adds three things to a QGIS project:
+
+1. **A rules table:** a table with no geometry and the columns in [`docs/rules-table.md`](docs/rules-table.md). It can be a GeoPackage beside the project, made in QGIS with **Layer, Create Layer, New GeoPackage Layer** and the geometry type **No Geometry**, or a table in SQL Server, PostGIS or anything else QGIS can open.
+2. **That table, as a layer of the project.**
+3. **The project variable `castlegate_rules_layer`**, set to that layer's name, in **Project Properties, Variables**.
+
+Castlegate never publishes the rules layer, whatever the project's publishing settings say. A project without the variable, or whose rules layer cannot be read, publishes nothing. From then on, access is managed by editing rows in QGIS, and a change applies within 30 seconds, with no need to publish the project again.
+
+**Who else takes part**
+
+- **No database administrator is needed to give people access.** Nobody gets a database login or a grant of their own: QGIS Server reads the data with the one account it uses today, and Castlegate decides what each person gets from it.
+- **A database administrator is needed once, if the rules table is in the database:** to create it, let QGIS Server's account read it, and let the GIS administrator edit it. A GeoPackage beside the project needs none of that.
+- **Whoever can edit the rules table decides who sees what,** so only the people who manage access should be able to change it: through the table's permissions in the database, or the folder's permissions for a GeoPackage.
+- **The sign-in administrator,** in Entra for example, registers the app whose sign-ins the server accepts, and gives the ID of each group a row names.
+- **The server administrator** installs the plugin ([`install/`](install/README.md)).
 
 ## For IT
 
