@@ -3,7 +3,7 @@
 QGIS Server runs a request's own filter or sort without asking the access
 filter about it. So a filter on a hidden field tells the person its values by
 which features come back, and a filter calling a function such as
-`aggregate()` or `get_feature()` reads other layers, the rules layer
+`aggregate()` or `get_feature()` reads other layers, the rules table
 included. The plugin refuses a request whose filter or sort names a field
 hidden from the person on a layer they may see, by its name or its alias,
 uses a function outside `FUNCTIONS`, or uses a variable.

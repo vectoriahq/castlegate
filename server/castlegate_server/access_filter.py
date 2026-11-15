@@ -21,7 +21,7 @@ from .state import log
 CACHE_KEY = "castlegate"
 
 # Which edit filter each kind of transaction action is checked against.
-_ACTION_RIGHTS = {"insert": ("add",), "delete": ("delete",)}
+_ACTION_RIGHTS = {"insert": ("insert",), "delete": ("delete",)}
 
 
 def _no_permissions():
@@ -42,7 +42,7 @@ class AccessFilter(QgsAccessControlFilter):
         if state.person is None or rules is None or not rules.loaded or state.read_refusal:
             return NOTHING
         if layer.id() == rules.layer_id:
-            return NOTHING  # the rules layer is never served
+            return NOTHING  # the rules table is never served
         project = layer.project()
         if project is None or project.fileName() != rules.path:
             return NOTHING
@@ -59,10 +59,10 @@ class AccessFilter(QgsAccessControlFilter):
         def answer():
             rights = _no_permissions()
             a = self._answer(layer)
-            rights.canRead = "see" in a.rights
+            rights.canRead = "read" in a.rights
             if not self.plugin.state.edit_refusal:
-                rights.canInsert = "add" in a.rights
-                rights.canUpdate = "change" in a.rights or "move" in a.rights
+                rights.canInsert = "insert" in a.rights
+                rights.canUpdate = "update_attributes" in a.rights or "update_geometry" in a.rights
                 rights.canDelete = "delete" in a.rights
             return rights
 
@@ -70,9 +70,9 @@ class AccessFilter(QgsAccessControlFilter):
 
     def layerFilterExpression(self, layer):
         def answer():
-            expression = self._answer(layer).see_filter
+            expression = self._answer(layer).read_filter
             if expression and QgsExpression(expression).hasParserError():
-                log("the see filter for %s does not parse; showing no features" % layer.name(), Qgis.MessageLevel.Warning)
+                log("the read filter for %s does not parse; showing no features" % layer.name(), Qgis.MessageLevel.Warning)
                 return "FALSE"
             return expression
 
@@ -85,7 +85,7 @@ class AccessFilter(QgsAccessControlFilter):
     def authorizedLayerAttributes(self, layer, attributes):
         def answer():
             a = self._answer(layer)
-            if "see" not in a.rights:
+            if "read" not in a.rights:
                 return []
             return [name for name in attributes if name not in a.hidden]
 
@@ -130,9 +130,9 @@ class AccessFilter(QgsAccessControlFilter):
                 continue
             if action.kind == "update":
                 if action.fields:
-                    rights.add("change")
+                    rights.add("update_attributes")
                 if action.geometry:
-                    rights.add("move")
+                    rights.add("update_geometry")
             else:
                 rights.update(_ACTION_RIGHTS[action.kind])
         return rights

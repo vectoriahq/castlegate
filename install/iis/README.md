@@ -49,7 +49,7 @@ With a domain service account and the folder of GeoPackages it saves to:
 .\Install-Castlegate.ps1 -TenantId <tenant ID> -ClientId <client ID> -PluginZip .\castlegate_server-0.1.0.zip -Credential (Get-Credential DOMAIN\svc-groundwork) -DataFolder D:\GIS\Projects -CheckMap D:\GIS\Projects\assets.qgs
 ```
 
-`-WhatIf` lists what it would change without changing it. It ends with the status check from [`install/common/`](../common/README.md) when `-CheckMap` names a project the server opens. Each project names its rules layer in the `castlegate_rules_layer` project variable ([`docs/rules-table.md`](../../docs/rules-table.md)).
+`-WhatIf` lists what it would change without changing it. It ends with the status check from [`install/common/`](../common/README.md) when `-CheckMap` names a project the server opens. Each project names its rules table in the `castlegate_rules_table` project variable ([`docs/rules-table.md`](../../docs/rules-table.md)).
 
 To remove it, which leaves the folder and its log:
 

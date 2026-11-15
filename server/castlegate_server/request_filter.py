@@ -135,17 +135,17 @@ class RequestFilter(QgsServerFilter):
                 return "the transaction names %s, which is not one layer of this project" % action.layer
             answer = rules.rules.answer(state.person, layer, QgsExpression.quotedString)
             if action.kind == "insert":
-                needed = ["add"]
+                needed = ["insert"]
             elif action.kind == "delete":
                 needed = ["delete"]
             else:
-                needed = (["change"] if action.fields else []) + (["move"] if action.geometry else [])
+                needed = (["update_attributes"] if action.fields else []) + (["update_geometry"] if action.geometry else [])
                 if not needed:
                     return "an Update on %s names no field" % layer
             for right in needed:
                 if right not in answer.rights:
                     return "you may not %s features on layer %s" % (right, layer)
-            for right in ("add", "change"):
+            for right in ("insert", "update_attributes"):
                 if right in needed:
                     blocked = sorted(action.fields & answer.blocked_on(right))
                     if blocked:
