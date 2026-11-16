@@ -28,14 +28,14 @@ It changes nothing of an existing QGIS Server: no other pool, FastCGI entry, app
 - **The release zip,** `castlegate_server-<version>.zip`.
 - **An app registration in Entra for this QGIS Server:**
   1. Under **Expose an API**, add a scope, such as `access_as_user`.
-  2. Under **Expose an API**, **Authorized client applications**, add Groundwork's application ID, which Vectoria gives you, with that scope. Your staff then see no consent prompt.
+  2. Under **Expose an API**, **Authorized client applications**, add Groundwork's application ID, which Vectoria gives you, with that scope. Your users then see no consent prompt.
   3. In the **Manifest**, set `requestedAccessTokenVersion` to `2`, so tokens have the issuer `https://login.microsoftonline.com/<tenant ID>/v2.0`.
-  4. If rules name groups, under **Token configuration**, add the groups claim. A person in more than 200 groups is refused; [`docs/limits.md`](../../docs/limits.md) says why.
-- **The account the pool runs as.** Groundwork saves, so it needs write rights on the data, where an existing QGIS Server's account is often read-only. Without `-Credential` the pool runs as `IIS AppPool\GroundworkQgisServer`; layers in a GeoPackage need `-DataFolder` for that identity to write them, and layers in a database need the database login in the project's connection.
+  4. If rules name groups, under **Token configuration**, add the groups claim. A user in more than 200 groups is refused; [`docs/limits.md`](../../docs/limits.md) says why.
+- **The account the pool runs as.** Groundwork sends WFS-T transactions, so the account needs write rights on the data, where an existing QGIS Server's account is often read-only. Without `-Credential` the pool runs as `IIS AppPool\GroundworkQgisServer`; layers in a GeoPackage need `-DataFolder` for that identity to write them, and layers in a database need the database login in the project's connection.
 
 ## Running it
 
-In Windows PowerShell opened with **Run as administrator**. For a sign-in provider other than Entra, pass `-Issuer` with its issuer address instead of `-TenantId`.
+In Windows PowerShell opened with **Run as administrator**. For an identity provider other than Entra, pass `-Issuer` with its issuer address instead of `-TenantId`.
 
 With Entra:
 
@@ -43,7 +43,7 @@ With Entra:
 .\Install-Castlegate.ps1 -TenantId <tenant ID> -ClientId <the app registration's application (client) ID> -PluginZip .\castlegate_server-0.1.0.zip -CheckMap C:\Projects\assets.qgs
 ```
 
-With a domain service account and the folder of GeoPackages it saves to:
+With a domain service account and the folder of GeoPackages it writes to:
 
 ```powershell
 .\Install-Castlegate.ps1 -TenantId <tenant ID> -ClientId <client ID> -PluginZip .\castlegate_server-0.1.0.zip -Credential (Get-Credential DOMAIN\svc-groundwork) -DataFolder D:\GIS\Projects -CheckMap D:\GIS\Projects\assets.qgs
@@ -75,4 +75,4 @@ Add the status check to your monitoring, so a QGIS Server that starts without th
 C:\OSGeo4W\apps\Python312\python.exe C:\Groundwork\IIS\QgisServer\plugins\castlegate_server\tools\check.py https://<your server>/groundwork/qgisserver --map <a project>
 ```
 
-The log is `C:\Groundwork\IIS\QgisServer\logs\qgis_server.log`, with one audit line per save at Warning.
+The log is `C:\Groundwork\IIS\QgisServer\logs\qgis_server.log`, with one audit line per edit at Warning.
