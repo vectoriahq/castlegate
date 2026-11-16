@@ -421,7 +421,7 @@ async function checkSaves() {
   // Fields the plugin checks itself.
   const hidden = await post("bob", update("assets", 2, { secret: "bob wrote this" }));
   record("field-hidden-refused", !succeeded(hidden) && (await feature("assets", 2)).properties.secret === "secret 1", `bob sets hidden "secret": status ${hidden.status}: ${short(hidden.text)}`);
-  record("refusal-response", null, `what a client receives for a save the rules refuse: ${hidden.text.replace(/\s+/g, " ").slice(0, 400)}`);
+  record("refusal-response", null, `what a client receives for a transaction the rules refuse: ${hidden.text.replace(/\s+/g, " ").slice(0, 400)}`);
   // Review finding on #3: QGIS reads <Name>sec<x/>ret</Name> as "secret".
   const split = await post("bob", update("assets", 2, { "sec<x/>ret": "split name" }));
   record("field-hidden-split-name-refused", !succeeded(split) && (await feature("assets", 2)).properties.secret === "secret 1", `bob sets "sec<x/>ret": status ${split.status}: ${short(split.text)}`);
@@ -434,17 +434,17 @@ async function checkSaves() {
 
   // Updating attributes and updating geometry are separate rights.
   const erinMove = await post("erin", update("assets", 2, { geometry: POINT(145.0, -37.9) }));
-  record("move-only-may-move", succeeded(erinMove) && coords(await feature("assets", 2)) === "145.000,-37.900", `erin, who may only move, moves a feature: ${short(erinMove.text)}`);
+  record("geometry-only-may-update-geometry", succeeded(erinMove) && coords(await feature("assets", 2)) === "145.000,-37.900", `erin, who may only update geometry, updates a feature's geometry: ${short(erinMove.text)}`);
   const erinName = await post("erin", update("assets", 2, { name: "erin" }));
-  record("move-only-may-not-change", !succeeded(erinName) && (await feature("assets", 2)).properties.name === "bob renamed", `erin changes a name: status ${erinName.status}: ${short(erinName.text)}`);
+  record("geometry-only-may-not-update-attributes", !succeeded(erinName) && (await feature("assets", 2)).properties.name === "bob renamed", `erin updates a name: status ${erinName.status}: ${short(erinName.text)}`);
   const bobMove = await post("bob", update("assets", 4, { geometry: POINT(145.0, -37.9) }));
-  record("change-only-may-not-move", !succeeded(bobMove) && coords(await feature("assets", 4)) !== "145.000,-37.900", `bob, who may change but not move, moves his own: status ${bobMove.status}: ${short(bobMove.text)}`);
+  record("attributes-only-may-not-update-geometry", !succeeded(bobMove) && coords(await feature("assets", 4)) !== "145.000,-37.900", `bob, who may update attributes but not geometry, updates his own feature's geometry: status ${bobMove.status}: ${short(bobMove.text)}`);
 
   // A layer whose WFS type name differs from its published name.
   const note = await post("alice", update("site_notes", 1, { name: "renamed note" }));
   record("type-name-allowed", succeeded(note), `alice updates "site notes" as site_notes: ${short(note.text)}`);
   const bobNote = await post("bob", update("site_notes", 1, { name: "bob's note" }));
-  record("type-name-refused", !succeeded(bobNote), `bob, who may only see "site notes", updates it: status ${bobNote.status}: ${short(bobNote.text)}`);
+  record("type-name-refused", !succeeded(bobNote), `bob, who may only read "site notes", updates it: status ${bobNote.status}: ${short(bobNote.text)}`);
 
   // Saves the request filter refuses before QGIS Server reads them.
   const kvp = await req({ SERVICE: "WFS", VERSION: "1.0.0", REQUEST: "Transaction", OPERATION: "Delete", TYPENAME: "assets", FEATUREID: "assets.6" }, { who: "alice" });
@@ -463,7 +463,7 @@ async function checkSaves() {
   // Review finding on #3: a line break in a type name wrote a second, forged audit line.
   const forged = "x&#10;audit id=FORGED email=alice@example.org layer=assets action=delete outcome=done";
   const forgery = await req({ SERVICE: "WFS", REQUEST: "Transaction" }, { who: "bob", body: tx(`<wfs:Update typeName="${forged}"><wfs:Property><wfs:Name>a</wfs:Name></wfs:Property></wfs:Update>`) });
-  record("audit-forgery-attempt", null, `bob's save with a line break in its type name: status ${forgery.status}: ${short(forgery.text)}`);
+  record("audit-forgery-attempt", null, `bob's transaction with a line break in its type name: status ${forgery.status}: ${short(forgery.text)}`);
 
   // An add by someone allowed to add.
   const aliceIns = await post("alice", insert("assets", { name: "alice new", owner: "alice@example.org" }));
@@ -488,7 +488,7 @@ async function checkProjects() {
   const none = names((await gps("alice", { map: MAP_NONE })).text);
   record("no-rules-variable-serves-nothing", !["assets", "restricted"].some((n) => none.includes(n)), `alice in a project with no rules variable sees [${none.join(", ")}]`);
   const missing = names((await gps("alice", { map: MAP_MISSING })).text);
-  record("missing-rules-layer-serves-nothing", !["assets", "restricted"].some((n) => missing.includes(n)), `alice in a project naming a missing rules layer sees [${missing.join(", ")}]`);
+  record("missing-rules-table-serves-nothing", !["assets", "restricted"].some((n) => missing.includes(n)), `alice in a project naming a missing rules table sees [${missing.join(", ")}]`);
   // The shared capabilities cache stays off: bob after alice does not get alice's layers.
   await gps("alice");
   const after = names((await gps("bob")).text);

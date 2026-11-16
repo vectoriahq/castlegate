@@ -21,13 +21,13 @@ Each folder here does those four jobs for one web server, and each ends with the
 
 | Variable | Holds |
 | --- | --- |
-| `CASTLEGATE_ISSUER` | The sign-in provider's issuer. For Entra: `https://login.microsoftonline.com/<tenant ID>/v2.0` |
+| `CASTLEGATE_ISSUER` | The identity provider's issuer. For Entra: `https://login.microsoftonline.com/<tenant ID>/v2.0` |
 | `CASTLEGATE_AUDIENCE` | The application (client) ID of the app registration the tokens are for, which is what a version 2 Entra token's `aud` holds |
 | `CASTLEGATE_SCOPE` | The scope the app registration exposes, such as `access_as_user` |
 | `CASTLEGATE_TENANT` | Optional. When set, a token's `tid` must equal it |
 | `CASTLEGATE_EMAIL_CLAIM` | Optional. The claim holding the sign-in email; `preferred_username` by default |
 | `CASTLEGATE_GROUPS_CLAIM` | Optional. The claim holding group object IDs; `groups` by default |
-| `CASTLEGATE_ID_CLAIM` | Optional. The claim holding the person's immutable ID; `oid` by default |
+| `CASTLEGATE_ID_CLAIM` | Optional. The claim holding the user's immutable ID; `oid` by default |
 | `QGIS_PLUGINPATH` | A folder of this QGIS Server's own that holds `castlegate_server/` |
 
 Until `CASTLEGATE_ISSUER`, `CASTLEGATE_AUDIENCE` and `CASTLEGATE_SCOPE` are all set, every sign-in is refused, and the server log says which is missing. Set the app registration to issue version 2 access tokens, so the issuer has the one form above.
