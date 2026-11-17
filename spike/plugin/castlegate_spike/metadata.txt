@@ -4,5 +4,5 @@ qgisMinimumVersion=3.28
 description=Package 1 prototype of per-person access control for QGIS Server. Not for production.
 version=0.0.1
 author=Vectoria
-email=simon.okeefe@vectoria.com.au
+email=castlegate@vectoria.com.au
 server=True

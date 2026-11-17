@@ -1,0 +1,48 @@
+name: Build the QGIS plugin
+
+# Builds Castlegate Server's zip and attaches it to a GitHub release whose tag
+# is the plugin's folder name and version, such as castlegate_server@0.1.0.
+# The zip is uploaded to plugins.qgis.org by hand (RELEASING.md).
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build castlegate_server
+    if: startsWith(github.event.release.tag_name, 'castlegate_server@')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Check the tag matches the plugin's version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version=$(python -c "import configparser; p = configparser.ConfigParser(); p.read('server/castlegate_server/metadata.txt', encoding='utf-8'); print(p['general']['version'])")
+          expected="castlegate_server@$version"
+          if [ "$TAG" != "$expected" ]; then
+            echo "::error::The release's tag is $TAG, but server/castlegate_server/metadata.txt gives $expected. Change the version in metadata.txt, or publish a release tagged $expected."
+            exit 1
+          fi
+      - name: Tests
+        run: |
+          python -m unittest discover -s tests/core -t .
+          python -m unittest discover -s tests/plugin -t .
+      - name: Build the zip
+        id: zip
+        run: echo "path=$(python scripts/build.py "$RUNNER_TEMP/plugin" | tail -n 1)" >> "$GITHUB_OUTPUT"
+      - name: Attach the zip to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          ZIP: ${{ steps.zip.outputs.path }}
+        run: gh release upload "$TAG" "$ZIP" --repo "$GITHUB_REPOSITORY"

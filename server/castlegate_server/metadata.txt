@@ -2,10 +2,27 @@
 name=Castlegate Server
 qgisMinimumVersion=3.36
 qgisMaximumVersion=4.99
-description=Per-person access to QGIS Server layers, features and fields, from a rules table and an OpenID Connect sign-in.
-about=Castlegate checks each request's bearer token and answers QGIS Server's access-control questions from a rules table that is a layer of the project. It refuses services other than WMS and WFS, and saves that set a field the person may not change.
+description=Lets QGIS Server give each signed-in person only the layers, features, fields and edits a rules table in the project allows, with OpenID Connect sign-in such as Microsoft Entra ID.
+about=Castlegate gives each person who signs in to QGIS Server their own share of a project: the layers, features and fields they may read, and the edits they may make. People sign in with their organisation account through OpenID Connect, such as Microsoft Entra ID, and Castlegate checks the access token each request carries.
+
+    The rules are a table in the QGIS project, edited in QGIS like any other table, with rows naming a user or a group and a layer:
+    - which layers they read; the rest are left out of the capabilities and of every response
+    - which features they read and which they may edit, each as a QGIS expression
+    - fields whose values are hidden from them, and fields they read but may not set
+    - inserting, updating attributes, updating geometry and deleting, each allowed on its own
+
+    A request with no valid token gets nothing but a 401. A WFS-T transaction that sets a hidden or read-only field, or touches a feature the person may not edit, is refused. An error inside Castlegate refuses the request. Each edit is written to QGIS Server's log with the person who made it.
+
+    Castlegate protects the WMS and WFS services and refuses every other service. It does not protect the database itself.
+
+    Experimental: Castlegate has not yet been reviewed by anyone outside Vectoria. The repository holds the setup guides for IIS, Apache, nginx and Docker, the rules table's columns, the known limits and the brief for a security reviewer.
 version=0.1.0
 author=Vectoria
-email=simon.okeefe@vectoria.com.au
+email=castlegate@vectoria.com.au
 server=True
+experimental=True
+homepage=https://github.com/vectoriahq/castlegate
+tracker=https://github.com/vectoriahq/castlegate/issues
+repository=https://github.com/vectoriahq/castlegate
+tags=qgis server,security,access control,authentication,openid connect,wfs,wms
 icon=icon.png

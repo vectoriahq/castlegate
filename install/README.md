@@ -7,7 +7,7 @@ The plugin is the same on every web server. It reads its settings from environme
 3. setting the plugin's environment variables and `QGIS_PLUGINPATH`;
 4. running QGIS Server, restarting it, and keeping its log.
 
-Each folder here does those four jobs for one web server, and each ends with the same status check.
+Each folder here does those four jobs for one web server, and each ends with the same status check. Each starts from the release zip, `castlegate_server-<version>.zip`, attached to each release on the repository's [Releases](https://github.com/vectoriahq/castlegate/releases) page.
 
 | Folder | State |
 | --- | --- |
