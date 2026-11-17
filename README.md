@@ -1,3 +1,5 @@
+<img src="assets/castlegate-mark.svg" alt="Castlegate logo" width="96">
+
 # Castlegate
 
 Castlegate Server is a QGIS Server plugin that gives each user who signs in their own share of a QGIS project: the layers, features and fields they may read, and the edits they may make. Users sign in with their organisation account, through OpenID Connect, such as Microsoft Entra ID.
