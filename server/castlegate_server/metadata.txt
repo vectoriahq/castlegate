@@ -18,7 +18,7 @@ about=Castlegate gives each person who signs in to QGIS Server their own share o
     Experimental: Castlegate has not yet been reviewed by anyone outside Vectoria. The repository holds the setup guides for IIS, Apache, nginx and Docker, the rules table's columns, the known limits and the brief for a security reviewer.
 version=0.1.0
 author=Vectoria
-email=simon.okeefe@vectoria.com.au
+email=castlegate@vectoria.com.au
 server=True
 experimental=True
 homepage=https://github.com/vectoriahq/castlegate
