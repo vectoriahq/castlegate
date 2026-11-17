@@ -8,3 +8,4 @@ version=0.1.0
 author=Vectoria
 email=simon.okeefe@vectoria.com.au
 server=True
+icon=icon.png
