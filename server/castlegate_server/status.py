@@ -43,7 +43,7 @@ class StatusService(QgsService):
             try:
                 response.setStatusCode(500)
             except Exception:  # noqa: BLE001
-                pass
+                log("setting the status answer's 500 failed: " + traceback.format_exc(), Qgis.MessageLevel.Critical)
 
     def _body(self, response):
         state = self.plugin.state

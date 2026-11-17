@@ -82,7 +82,7 @@ class RequestFilter(QgsServerFilter):
             try:
                 self._refuse("the request was refused")
             except Exception:  # noqa: BLE001
-                pass
+                log("refusing the request failed: " + traceback.format_exc(), Qgis.MessageLevel.Critical)
         return True
 
     # ---- once the project is open ------------------------------------------------------
