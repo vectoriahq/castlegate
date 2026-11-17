@@ -82,7 +82,14 @@ def _parse(body):
 
 
 def is_transaction(body):
-    """Whether the body's root element is a WFS Transaction; False for a body that is not XML."""
+    """
+    Whether the body's root element is a WFS Transaction; False for a body that
+    is not XML. A body over MAX_BODY_BYTES is not parsed and counts as one, so
+    read() refuses it: answering False would pass a large Transaction to QGIS
+    Server unread.
+    """
+    if len(body) > MAX_BODY_BYTES:
+        return True
     try:
         return _local(_parse(body).tag) == "Transaction"
     except TransactionError:

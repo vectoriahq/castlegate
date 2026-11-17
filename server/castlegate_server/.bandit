@@ -2,6 +2,7 @@
 # B405 flags the import of xml.etree. transaction.py reads a WFS request's body,
 # which comes from the request. Every parse goes through _parse, whose expat
 # parser refuses any document type declaration and entity declaration;
-# ElementTree only builds the tree from what expat accepts. Only read() refuses
-# a body over MAX_BODY_BYTES: is_transaction() parses a body with no size limit.
+# ElementTree only builds the tree from what expat accepts. No body over
+# MAX_BODY_BYTES is parsed: read() refuses one, and is_transaction() counts one
+# as a Transaction without parsing it, so read() refuses it.
 skips = B405

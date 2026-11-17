@@ -138,6 +138,15 @@ class Detecting(unittest.TestCase):
         self.assertFalse(is_transaction(tx("", root="wfs:GetFeature")))
         self.assertFalse(is_transaction(b"not xml"))
 
+    def test_a_body_over_the_limit_is_not_parsed_and_counts_as_a_transaction(self):
+        # Review finding on #14: is_transaction() parsed a body of any size before read() checked it.
+        from castlegate_server import transaction
+
+        body = b"<GetFeature>" + b" " * transaction.MAX_BODY_BYTES + b"</GetFeature>"
+        self.assertTrue(is_transaction(body))
+        with self.assertRaisesRegex(TransactionError, "too large"):
+            read(body)
+
 
 if __name__ == "__main__":
     unittest.main()
