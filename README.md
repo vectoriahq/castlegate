@@ -165,7 +165,7 @@ Castlegate began as part of Groundwork, Vectoria's web app for capturing and edi
 
 ## Status
 
-Castlegate is pre-1.0, at version 0.1.0, and no release has been published yet.
+Castlegate Server 0.1.0 is published in the [QGIS plugin repository](https://plugins.qgis.org/plugins/castlegate_server/), and its zip is attached to the [`castlegate_server@0.1.0` release](https://github.com/vectoriahq/castlegate/releases/tag/castlegate_server%400.1.0) on GitHub. It is marked experimental, so QGIS's Plugin Manager lists it only where **Show also experimental plugins** is ticked.
 
 ## Licence
 
